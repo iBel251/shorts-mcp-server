@@ -13,7 +13,11 @@ RUN npm ci --ignore-scripts
 
 COPY tsconfig.json ./
 COPY src ./src
-RUN npm run build
+# tsc directly, not `npm run build`: that script regenerates the widget bundles
+# with esbuild, whose platform binary is not reliably present under
+# --ignore-scripts. src/widgets.generated.ts is committed for exactly this
+# reason — regenerate it locally with `npm run build:widgets`.
+RUN npx tsc -p tsconfig.json
 
 # Reinstall as production-only for the runtime stage.
 RUN npm ci --omit=dev --ignore-scripts

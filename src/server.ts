@@ -3,6 +3,7 @@ import express, { type Request, type Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { registerApps } from './apps.js';
 import { requirePathSecret, requireSharedSecret } from './auth.js';
 import { errorMessage, log } from './logger.js';
 import { registerTools } from './tools.js';
@@ -37,6 +38,7 @@ function buildMcpServer(): McpServer {
         },
     );
     registerTools(server);
+    registerApps(server);
     return server;
 }
 

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { GALLERY_URI, PLAYER_URI, uiMeta } from './apps.js';
 import { makePreview } from './frames.js';
 import { downloadWithRetry } from './storage.js';
 import {
@@ -150,6 +151,9 @@ export function registerTools(server: McpServer): void {
                 'For any shot that reuses a character, location or prop from an earlier ' +
                 'shot, pass that shot\'s approved still in reference_asset_ids. Without a ' +
                 'reference each shot is an independent roll and the character will drift.',
+            // Renders the variations inline in chat for the user; the image
+            // blocks in the result remain what the model sees.
+            _meta: uiMeta(GALLERY_URI),
             inputSchema: {
                 shot_description: z
                     .string()
@@ -430,6 +434,8 @@ export function registerTools(server: McpServer): void {
                 'last frames as viewable images. Look at both: the characteristic failure ' +
                 'is starting flat and progressively turning photorealistic, or moving ' +
                 'something meant to stay still. Report drift rather than accepting it.',
+            // Plays the clip and shows the frame pair inline for the user.
+            _meta: uiMeta(PLAYER_URI),
             inputSchema: {
                 job_id: z.string().min(1).describe('Job id returned by animate.'),
                 include_images: z

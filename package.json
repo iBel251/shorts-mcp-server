@@ -9,13 +9,15 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "dev": "npm run build:widgets && tsx watch src/index.ts",
+    "build:widgets": "node widgets/build.mjs",
+    "build": "npm run build:widgets && tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "typecheck": "tsc -p tsconfig.check.json",
+    "typecheck": "npm run build:widgets && tsc -p tsconfig.check.json",
     "smoke": "tsx scripts/smoke.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@supabase/supabase-js": "^2.111.0",
     "dotenv": "^17.4.2",

@@ -222,6 +222,37 @@ a tenth the size of the stored PNG at no cost to a style judgement. The
 full-resolution PNG stays in Storage and its URL is returned alongside. Pass
 `include_images: false` to either tool to suppress the blocks and save tokens.
 
+### Inline UI — MCP Apps (SEP-1865)
+
+Image content blocks go to the *model*; they put nothing on the chat surface for
+the *human*. So `generate_still` and `check_job` also declare UI resources, which
+the host renders in a sandboxed iframe inline in the conversation:
+
+| Widget | URI | Shows |
+|---|---|---|
+| Gallery | `ui://shorts/gallery.html` | The variations, full size. Click one to approve it. |
+| Player | `ui://shorts/player.html` | The clip playing, plus first/last frame side by side. |
+
+The two mechanisms are complementary and both are kept — the widget is for you,
+the image blocks are for the model, and neither replaces the other. This is an
+optional, backwards-compatible extension: hosts without support ignore the
+`_meta` and the resource and still get identical text and image content.
+
+Only URLs cross the wire; the media loads directly from Storage. Two details
+that are easy to get wrong:
+
+- **Sandbox CSP is deny-by-default.** Without declaring the bucket origin in
+  `_meta.ui.csp.resourceDomains`, the iframe may load no images or video at all
+  and the widgets render empty.
+- **Resources must be fully self-contained.** The iframe cannot fetch sibling
+  assets, so CSS and JS are inlined into a single document. `widgets/build.mjs`
+  bundles `widgets/*.client.ts` with esbuild into `src/widgets.generated.ts`.
+
+That generated file is committed deliberately: the Docker build runs `tsc`
+directly rather than `npm run build`, because esbuild's platform binary is not
+reliably present under `npm ci --ignore-scripts`. After editing a widget, run
+`npm run build:widgets` and commit the result.
+
 ### Jobs survive restarts
 
 Job state lives entirely in Postgres. The worker re-reads open jobs from the

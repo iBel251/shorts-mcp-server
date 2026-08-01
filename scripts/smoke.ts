@@ -189,6 +189,45 @@ try {
         assert.ok(propsOf('generate_still').includes('reference_asset_ids'));
         pass('generate_still accepts reference images by asset id');
 
+        // --- MCP Apps (SEP-1865) UI resources ---------------------------------
+        const metaOf = (name: string): any => tools.find((t) => t.name === name)?._meta ?? {};
+        assert.equal(metaOf('generate_still').ui?.resourceUri, 'ui://shorts/gallery.html');
+        assert.equal(metaOf('check_job').ui?.resourceUri, 'ui://shorts/player.html');
+        // The flat key is deprecated but still what some hosts read.
+        assert.equal(metaOf('generate_still')['ui/resourceUri'], 'ui://shorts/gallery.html');
+        pass('generate_still and check_job reference their UI resources');
+
+        const { resources } = await client.listResources();
+        const uris = resources.map((r) => r.uri).sort();
+        assert.deepEqual(uris, ['ui://shorts/gallery.html', 'ui://shorts/player.html']);
+        assert.ok(
+            resources.every((r) => r.mimeType === 'text/html;profile=mcp-app'),
+            'UI resources must use the mcp-app profile MIME type',
+        );
+        pass('both UI resources are listed with the mcp-app MIME type');
+
+        for (const uri of uris) {
+            const read = await client.readResource({ uri });
+            const item = read.contents[0] as { text?: string; mimeType?: string };
+            assert.equal(item.mimeType, 'text/html;profile=mcp-app');
+            assert.ok(item.text?.startsWith('<!doctype html>'), `${uri} must be a document`);
+            assert.ok(item.text!.includes('<script>'), `${uri} must inline its script`);
+            // A sandboxed iframe cannot fetch siblings, so nothing may be external.
+            assert.ok(
+                !/<script[^>]+src=/i.test(item.text!) && !/<link[^>]+stylesheet/i.test(item.text!),
+                `${uri} must be fully self-contained`,
+            );
+        }
+        pass('UI resources are self-contained documents with no external refs');
+
+        // Sandbox CSP is deny-by-default: without this the widgets render empty.
+        const cspDomains = (resources[0] as any)?._meta?.ui?.csp?.resourceDomains;
+        assert.ok(
+            Array.isArray(cspDomains) && cspDomains.some((d: string) => d.includes('supabase')),
+            'UI resources must allowlist the storage origin for images and video',
+        );
+        pass('UI resources allowlist the Storage origin in their CSP');
+
         await client.close();
     }
 
