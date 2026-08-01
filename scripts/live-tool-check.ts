@@ -81,11 +81,12 @@ if (!done) {
     });
     describe(`check_job (shot ${done.shot_number})`, jobRes);
 
+    // One block: the frame pair is tiled to cost a single image slot.
     const images = (jobRes.content ?? []).filter((c: any) => c.type === 'image');
     console.log(
-        images.length === 2
+        images.length === 1
             ? '\n  SERVER IS SENDING IMAGES CORRECTLY — any blankness is host-side rendering.'
-            : `\n  SERVER PROBLEM: expected 2 image blocks, got ${images.length}.`,
+            : `\n  SERVER PROBLEM: expected 1 tiled image block, got ${images.length}.`,
     );
 }
 
