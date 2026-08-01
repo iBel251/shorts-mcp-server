@@ -74,25 +74,31 @@ try {
             arguments: { job_id: done.job_id },
         });
 
+        // One block, not two: the frame pair is tiled into a single image so a
+        // call costs one image slot. Hosts appear to cap images per
+        // conversation, and the pair is only ever compared side by side anyway.
         const imageBlocks = jobRes.content.filter((c: any) => c.type === 'image');
-        check('check_job returns image content blocks', imageBlocks.length === 2, `${imageBlocks.length} image block(s)`);
+        check(
+            'check_job returns exactly one image block (tiled frame pair)',
+            imageBlocks.length === 1,
+            `${imageBlocks.length} image block(s)`,
+        );
 
-        if (imageBlocks.length === 2) {
+        if (imageBlocks.length === 1) {
             check(
-                'image blocks declare a media type',
-                imageBlocks.every((b: any) => b.mimeType === 'image/jpeg'),
+                'image block declares a media type',
+                imageBlocks[0].mimeType === 'image/jpeg',
                 imageBlocks[0].mimeType,
             );
-            const sizes = imageBlocks.map((b: any) => Buffer.from(b.data, 'base64').length);
+            const bytes = Buffer.from(imageBlocks[0].data, 'base64').length;
             check(
-                'image payloads are real and reasonably sized',
-                sizes.every((n: number) => n > 5_000 && n < 300_000),
-                sizes.map((n: number) => `${Math.round(n / 1024)}kB`).join(', '),
+                'image payload is real and reasonably sized',
+                bytes > 5_000 && bytes < 300_000,
+                `${Math.round(bytes / 1024)}kB`,
             );
-            // Decode to disk so the frames can be eyeballed as the model sees them.
-            await writeFile('blockcheck-first.jpg', Buffer.from(imageBlocks[0].data, 'base64'));
-            await writeFile('blockcheck-last.jpg', Buffer.from(imageBlocks[1].data, 'base64'));
-            console.log('  [wrote blockcheck-first.jpg / blockcheck-last.jpg]');
+            // Decode to disk so it can be eyeballed as the model sees it.
+            await writeFile('blockcheck-frames.jpg', Buffer.from(imageBlocks[0].data, 'base64'));
+            console.log('  [wrote blockcheck-frames.jpg]');
 
             const parsed = JSON.parse(jobRes.content[0].text);
             check(

@@ -530,9 +530,21 @@ export function registerTools(server: McpServer): void {
                     'should not have?) before accepting this shot.';
 
                 if (args.include_images !== false) {
+                    // One block, not two. The frames are only ever looked at
+                    // together, side by side is the better comparison anyway,
+                    // and halving image slots per call doubles how long a
+                    // conversation stays useful if the host caps them.
                     images.push(
-                        ...(await imageBlocks(firstUrl, 'FIRST frame (start of clip):')),
-                        ...(await imageBlocks(lastUrl, 'LAST frame (end of clip):')),
+                        ...(firstUrl && lastUrl
+                            ? await contactSheetBlocks(
+                                  [firstUrl, lastUrl],
+                                  'LEFT = first frame, RIGHT = last frame. Compare them for ' +
+                                      'style drift before accepting this shot.',
+                              )
+                            : [
+                                  ...(await imageBlocks(firstUrl, 'FIRST frame:')),
+                                  ...(await imageBlocks(lastUrl, 'LAST frame:')),
+                              ]),
                     );
                 }
             }
