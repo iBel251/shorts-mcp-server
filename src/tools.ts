@@ -452,6 +452,10 @@ export function registerTools(server: McpServer): void {
                 'immediately with a job id. Video generation takes 30s to several minutes, ' +
                 'so this never blocks — poll check_job for the result. Style and negative ' +
                 'prompts are applied server-side.',
+            // Same widget as check_job: the card appears the moment the job is
+            // submitted and keeps itself up to date, rather than showing
+            // nothing until someone polls.
+            _meta: uiMeta(PLAYER_URI),
             inputSchema: {
                 asset_id: z
                     .string()
@@ -514,7 +518,17 @@ export function registerTools(server: McpServer): void {
             await setShotStatus(shot.id, 'animating');
 
             log.info('animate submitted', { jobId: job.id, shotId: shot.id, duration });
-            return ok({ job_id: job.id, status: 'submitted' });
+            // Model and resolution ride along so the widget can label the card
+            // while the job runs, the way a job card is expected to.
+            const cfg = getConfig();
+            return ok({
+                job_id: job.id,
+                status: 'submitted',
+                shot_id: shot.id,
+                duration,
+                model: cfg.videoModel,
+                resolution: cfg.videoResolution,
+            });
         }),
     );
 
@@ -556,10 +570,14 @@ export function registerTools(server: McpServer): void {
             const assets = await listAssetsForShots([job.shot_id]);
             const byId = new Map(assets.map((a) => [a.id, a]));
 
+            const cfg = getConfig();
             const payload: Record<string, unknown> = {
                 job_id: job.id,
                 shot_id: job.shot_id,
                 status: job.status,
+                duration: job.duration,
+                model: cfg.videoModel,
+                resolution: cfg.videoResolution,
             };
             const images: ContentBlock[] = [];
             if (job.status === 'done') {

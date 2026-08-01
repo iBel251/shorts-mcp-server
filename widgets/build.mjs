@@ -71,6 +71,11 @@ figcaption {
 }
 .tick { color: var(--accent); font-weight: 600; }
 .note, .empty { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--card); color: var(--muted);
+}
 video { width: 100%; border-radius: 10px; border: 1px solid var(--line); background: #000; }
 .frames { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
 .frames figure { margin: 0; }

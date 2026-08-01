@@ -236,10 +236,19 @@ Image content blocks go to the *model*; they put nothing on the chat surface for
 the *human*. So `generate_still` and `check_job` also declare UI resources, which
 the host renders in a sandboxed iframe inline in the conversation:
 
-| Widget | URI | Shows |
+| Widget | Tools | Shows |
 |---|---|---|
-| Gallery | `ui://shorts/gallery.html` | The variations, full size. Click one to approve it. |
-| Player | `ui://shorts/player.html` | The clip playing, plus first/last frame side by side. |
+| Gallery | `generate_still` | The variations, full size. Click one to approve it. |
+| Player | `animate`, `check_job` | A live job card, then the clip plus first/last frame. |
+
+The player is attached to **`animate` as well as `check_job`**, so a card appears
+the moment a job is submitted rather than only once someone remembers to poll.
+While the job runs the widget polls `check_job` from inside the iframe and
+updates in place — elapsed time, status, then the video. Its own polls pass
+`include_images: false` and `critique: false`, since the widget only needs URLs
+and re-running the vision pass every five seconds would cost real money for
+something nobody reads. If the host does not support proxying tool calls, the
+card just holds its last known status instead of erroring.
 
 The two mechanisms are complementary and both are kept — the widget is for you,
 the image blocks are for the model, and neither replaces the other. This is an

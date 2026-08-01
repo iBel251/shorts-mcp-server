@@ -211,9 +211,12 @@ try {
         const metaOf = (name: string): any => tools.find((t) => t.name === name)?._meta ?? {};
         assert.equal(metaOf('generate_still').ui?.resourceUri, 'ui://shorts/gallery.html');
         assert.equal(metaOf('check_job').ui?.resourceUri, 'ui://shorts/player.html');
+        // animate too, so a job card appears at submission rather than only
+        // once someone polls.
+        assert.equal(metaOf('animate').ui?.resourceUri, 'ui://shorts/player.html');
         // The flat key is deprecated but still what some hosts read.
         assert.equal(metaOf('generate_still')['ui/resourceUri'], 'ui://shorts/gallery.html');
-        pass('generate_still and check_job reference their UI resources');
+        pass('generate_still, animate and check_job reference their UI resources');
 
         const { resources } = await client.listResources();
         const uris = resources.map((r) => r.uri).sort();
@@ -237,6 +240,14 @@ try {
             );
         }
         pass('UI resources are self-contained documents with no external refs');
+
+        // Every referenced resource must actually exist: a tool pointing at a
+        // missing ui:// is a broken card with no error anyone would see.
+        for (const name of ['generate_still', 'animate', 'check_job']) {
+            const uri = metaOf(name).ui?.resourceUri;
+            assert.ok(uris.includes(uri), `${name} references unknown resource ${uri}`);
+        }
+        pass('every tool-referenced UI resource is actually served');
 
         // Sandbox CSP is deny-by-default: without this the widgets render empty.
         const cspDomains = (resources[0] as any)?._meta?.ui?.csp?.resourceDomains;
