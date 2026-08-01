@@ -201,6 +201,12 @@ try {
         ]);
         pass('generate_still exposes image_mode (sheet | individual)');
 
+        // Text reaches the model when image blocks do not, so the critique is
+        // the fallback that keeps it able to judge rather than guess.
+        assert.ok(propsOf('generate_still').includes('critique'));
+        assert.ok(propsOf('check_job').includes('critique'));
+        pass('generate_still and check_job expose the vision critique switch');
+
         // --- MCP Apps (SEP-1865) UI resources ---------------------------------
         const metaOf = (name: string): any => tools.find((t) => t.name === name)?._meta ?? {};
         assert.equal(metaOf('generate_still').ui?.resourceUri, 'ui://shorts/gallery.html');

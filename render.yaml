@@ -47,6 +47,12 @@ services:
       # size" from "host dislikes the structure" without generating anything.
       - key: PREVIEW_MAX_WIDTH
         value: "640"
+      # Server-side vision critique, returned as text. Keeps the model able to
+      # judge and regenerate when image blocks do not reach it.
+      - key: VISION_MODEL
+        value: grok-4.5
+      - key: ENABLE_VISION_CRITIQUE
+        value: "true"
       # The free instance sleeps while idle, so the in-process worker only ticks
       # while the container is awake. Poll a little faster so a job that is
       # already in flight finishes promptly once something wakes it.

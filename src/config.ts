@@ -120,6 +120,13 @@ export interface Config {
      * code change or redeploy, makes that an experiment instead of a guess.
      */
     enableMcpApps: boolean;
+    /**
+     * Vision model used for the server-side critique pass, which returns a
+     * structured judgement as text. Text reaches the model reliably; image
+     * blocks currently do not.
+     */
+    visionModel: string;
+    enableVisionCritique: boolean;
 }
 
 let cached: Config | undefined;
@@ -150,6 +157,8 @@ export function getConfig(): Config {
         jobTimeoutMs: numeric('JOB_TIMEOUT_MS', 30 * 60 * 1000),
         logLevel: optional('LOG_LEVEL', 'info'),
         enableMcpApps: boolean('ENABLE_MCP_APPS', true),
+        visionModel: optional('VISION_MODEL', 'grok-4.5'),
+        enableVisionCritique: boolean('ENABLE_VISION_CRITIQUE', true),
     };
     return cached;
 }

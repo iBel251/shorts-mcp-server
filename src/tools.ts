@@ -3,10 +3,12 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { GALLERY_URI, PLAYER_URI, uiMeta } from './apps.js';
+import { critiqueDrift, critiqueStill } from './vision.js';
 import { makeContactSheet, makePreview } from './frames.js';
 import { downloadWithRetry } from './storage.js';
 import {
     buildPrompt,
+    getConfig,
     DEFAULT_DURATION,
     DEFAULT_STILL_COUNT,
     MAX_DURATION,
@@ -225,6 +227,14 @@ export function registerTools(server: McpServer): void {
                     .boolean()
                     .optional()
                     .describe('Embed the variations as images. Default true; false saves tokens.'),
+                critique: z
+                    .boolean()
+                    .optional()
+                    .describe(
+                        'Run a server-side vision pass over each variation and return the ' +
+                        'judgements as text. Default true. This is what lets you accept or ' +
+                        'reject when embedded images do not reach you.',
+                    ),
                 image_mode: z
                     .enum(['sheet', 'individual'])
                     .optional()
@@ -324,6 +334,25 @@ export function registerTools(server: McpServer): void {
 
             await setShotStatus(shot.id, 'still_ready');
 
+            // Server-side vision pass. Text survives where image blocks do not,
+            // so this is what keeps the model able to accept or reject when it
+            // cannot see the picture. Runs in parallel with itself, not before
+            // the images — a critique failure must never fail the tool.
+            let critiques: Array<Record<string, unknown>> | undefined;
+            if (getConfig().enableVisionCritique && args.critique !== false) {
+                critiques = await Promise.all(
+                    stills.map(async (still, index) => ({
+                        variation: index + 1,
+                        asset_id: still.asset_id,
+                        ...(await critiqueStill(
+                            still.url,
+                            args.shot_description,
+                            args.palette_override,
+                        )),
+                    })),
+                );
+            }
+
             // Same reasoning as check_job: a variation the model cannot see is
             // a variation it cannot choose between.
             //
@@ -360,10 +389,18 @@ export function registerTools(server: McpServer): void {
                     project_id: projectId,
                     shot_number: shot.shot_number,
                     stills,
+                    ...(critiques ? { critiques } : {}),
                     hint:
                         'The images below are the variations, in order. Judge them on style ' +
                         'fidelity (flat 2D, even outlines, no photorealism) and composition, ' +
-                        'then call approve_still with the chosen asset_id.',
+                        'then call approve_still with the chosen asset_id.' +
+                        (critiques
+                            ? ' If the images did not reach you, use `critiques` — a ' +
+                              'server-side vision pass over each variation. It is a ' +
+                              'description, not the picture, so say so if you rely on it; ' +
+                              'each entry carries a verdict and a fix_suggestion for ' +
+                              'regenerating.'
+                            : ''),
                     ...(failures.length > 0
                         ? { warning: `${failures.length} of ${count} generations failed`, failures }
                         : {}),
@@ -500,6 +537,13 @@ export function registerTools(server: McpServer): void {
                     .boolean()
                     .optional()
                     .describe('Embed the frames as images. Default true; set false to save tokens.'),
+                critique: z
+                    .boolean()
+                    .optional()
+                    .describe(
+                        'Run a server-side vision comparison of the two frames and return it ' +
+                        'as text. Default true. Useful when embedded images do not reach you.',
+                    ),
             },
         },
         guard('check_job', async (args) => {
@@ -528,6 +572,22 @@ export function registerTools(server: McpServer): void {
                     'The two frames below are the first and last frame of this clip. Compare ' +
                     'them for style drift (flat 2D holding? outlines even? anything moved that ' +
                     'should not have?) before accepting this shot.';
+
+                // The drift check as text, for when the frames do not arrive.
+                if (getConfig().enableVisionCritique && args.critique !== false) {
+                    const shot = await getShot(job.shot_id);
+                    if (firstUrl && lastUrl && shot) {
+                        payload.drift_report = await critiqueDrift(
+                            firstUrl,
+                            lastUrl,
+                            shot.description,
+                        );
+                        payload.hint +=
+                            ' If the frames did not reach you, `drift_report` is a server-side ' +
+                            'vision comparison of the same two frames — a description rather ' +
+                            'than the pictures, so say so if you rely on it.';
+                    }
+                }
 
                 if (args.include_images !== false) {
                     // One block, not two. The frames are only ever looked at

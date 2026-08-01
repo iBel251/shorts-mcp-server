@@ -261,6 +261,46 @@ directly rather than `npm run build`, because esbuild's platform binary is not
 reliably present under `npm ci --ignore-scripts`. After editing a widget, run
 `npm run build:widgets` and commit the result.
 
+### The vision pass — judging when the images don't arrive
+
+Image content blocks are unreliable in practice. Hosts appear to cap how many
+images a conversation will carry; past that limit they arrive as correctly
+positioned but *empty* slots, and the model is silently blind. Reproduced on a
+single connection: the same finished job returned the same bytes early in a
+conversation and empty slots later, with nothing changing server-side.
+
+Text always gets through. So the server looks at the image itself and returns a
+structured judgement as text:
+
+```json
+"critiques": [{
+  "variation": 3, "asset_id": "e89658f3",
+  "verdict": "regenerate",
+  "reason": "Sky and water use soft gradient bands rather than flat colour fills.",
+  "style_ok": false, "palette_ok": true, "framing_ok": true,
+  "people": 1, "visible_text": false, "faces_to_camera": false,
+  "anatomy_issues": null,
+  "fix_suggestion": "Replace sky/water gradients with solid flat muted fills..."
+}]
+```
+
+`check_job` returns a `drift_report` comparing first and last frame in one call —
+the drift check as text.
+
+The rubric is built from `STYLE_BLOCK` and `NEGATIVE_BLOCK`, so it tests the same
+rules the prompt asserts. Verdicts are re-derived server-side rather than
+trusting the model to apply its own rule: any failing flag forces `regenerate`,
+because a self-contradictory "accept" is exactly what this exists to prevent.
+
+**This is a floor, not a replacement for seeing.** It is a description, and a
+model relying on it is judging a description — it should say so. Measured
+against four real stills it was discriminating (2 accept, 2 regenerate, catching
+genuine gradient violations) but not identical to a direct look. Images are
+still returned alongside; this only carries the load when they don't arrive.
+
+Costs ~$0.006 and ~4–5s per image. `ENABLE_VISION_CRITIQUE=false`, or
+`critique: false` per call, turns it off. `VISION_MODEL` defaults to `grok-4.5`.
+
 #### If images stop reaching the model: `ENABLE_MCP_APPS=false`
 
 Declaring a UI resource on a tool appears to change how some hosts handle that
