@@ -144,6 +144,31 @@ use) and `list_shots` returns every project, so multiple shorts stay separate
 without adding `create_project`/`list_projects` tools — the spec asks for
 exactly five.
 
+### Reference images (character continuity)
+
+`generate_still` accepts up to three `reference_asset_ids`. Pass the approved
+still that established a character and the new shot keeps their face, costume
+and proportions instead of being an independent roll of the dice:
+
+```
+generate_still(
+  shot_description = "The same man now on a narrow cobbled street at night...",
+  reference_asset_ids = ["<asset_id of shot 1's approved still>"]
+)
+```
+
+References resolve to assets in your own Storage, never an expiring upstream
+URL, and any still or extracted video frame can serve as one (a video asset
+cannot — use its `first_frame`/`last_frame`). When references are present the
+request routes to `/v1/images/edits` instead of `/v1/images/generations`, and a
+server-owned `REFERENCE_BLOCK` is appended instructing the model to hold the
+design — continuity is not something the caller should have to remember to ask
+for, for the same reason style isn't.
+
+Request shapes differ by count and both were confirmed against the live API: one
+reference goes in `image` as an object, several go in `images` as an array.
+Passing an array to `image` is rejected with 422.
+
 Typical flow:
 
 ```
@@ -282,6 +307,9 @@ output. See the acceptance checklist in
 
 ## Out of scope for v1
 
-Web UI, audio/narration, video assembly, upscaling, multi-user/billing, OAuth,
-and the `edit` capability the old model exposes (worth revisiting later for
-fixing drift without a full re-roll).
+Web UI, audio/narration, video assembly, upscaling, multi-user/billing, OAuth.
+
+The spec also deferred the `edit` capability; it has since been added as
+`reference_asset_ids` on `generate_still` (see above), which covers both
+character continuity and the spec's stated motivation of fixing drift without a
+full re-roll.

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Cheaper-config test: 480p at 6 seconds.
  *
  * Reuses an already-approved still so no image generation cost is incurred.
@@ -6,7 +6,7 @@
  * same clip at 720p.
  *
  * Verifies that VIDEO_RESOLUTION is genuinely honoured end to end rather than
- * silently ignored upstream â€” the whole point of making it configurable.
+ * silently ignored upstream — the whole point of making it configurable.
  *
  * Run with: npx tsx scripts/cheap-test.ts
  */
@@ -33,7 +33,7 @@ const failed: string[] = [];
 
 function check(name: string, ok: boolean, detail = ''): void {
     (ok ? passed : failed).push(name);
-    console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${name}${detail ? ` â€” ${detail}` : ''}`);
+    console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -85,10 +85,10 @@ try {
         }),
     );
 
-    // Reuse an existing approved still â€” no image generation cost.
+    // Reuse an existing approved still — no image generation cost.
     const shots = await callTool(client, 'list_shots', {});
     const reusable = shots.shots.find((s: any) => s.still_approved && s.still_asset_id);
-    if (!reusable) throw new Error('no approved still to reuse â€” run acceptance.ts first');
+    if (!reusable) throw new Error('no approved still to reuse — run acceptance.ts first');
     console.log(`  reusing approved still from shot ${reusable.shot_number}\n`);
 
     const t0 = Date.now();
@@ -100,13 +100,13 @@ try {
     });
     check('animate accepted and returned fast', Boolean(anim.job_id), `${Date.now() - t0}ms`);
 
-    console.log('\n  pollingâ€¦');
+    console.log('\n  polling…');
     let job: any = { status: 'submitted' };
     const deadline = Date.now() + 10 * 60 * 1000;
     while (Date.now() < deadline && !['done', 'failed', 'expired'].includes(job.status)) {
         await sleep(10_000);
         job = await callTool(client, 'check_job', { job_id: anim.job_id });
-        console.log(`    â€¦${job.status} (${Math.round((Date.now() - t0) / 1000)}s)`);
+        console.log(`    …${job.status} (${Math.round((Date.now() - t0) / 1000)}s)`);
     }
 
     check('job completed', job.status === 'done', job.error ? `error=${job.error}` : job.status);
@@ -132,7 +132,7 @@ try {
         console.log('');
         check('video is 9:16 vertical', h > w, `${w}x${h}`);
         check(
-            `resolution honoured (${RESOLUTION} â†’ short side ${RESOLUTION.replace('p', '')})`,
+            `resolution honoured (${RESOLUTION} → short side ${RESOLUTION.replace('p', '')})`,
             Math.min(w, h) === Number(RESOLUTION.replace('p', '')),
             `${w}x${h}`,
         );

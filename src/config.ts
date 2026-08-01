@@ -19,8 +19,21 @@ export const NEGATIVE_BLOCK =
     'Nobody speaks or talks. No faces toward camera. No text, no captions, ' +
     'no watermark, no extra characters, no fast motion.';
 
+/**
+ * Appended when reference images are supplied. Like the style block, this is
+ * server-owned: the point of a reference is continuity, so the instruction to
+ * honour it should not be something the caller can forget to include.
+ */
+export const REFERENCE_BLOCK =
+    'Match the character design, facial features, costume and colour palette of ' +
+    'the reference image exactly. Keep the same subject; change only the ' +
+    'described action, framing and setting.';
+
 /** Bump when STYLE_BLOCK / NEGATIVE_BLOCK change, so old shots stay traceable. */
 export const STYLE_VERSION = 1;
+
+/** Max reference images per request, per the upstream limit. */
+export const MAX_REFERENCE_IMAGES = 3;
 
 /**
  * Assemble a full upstream prompt. The palette override slots in after the
@@ -31,12 +44,14 @@ export function buildPrompt(parts: {
     shotDescription: string;
     motionInstruction?: string | undefined;
     paletteOverride?: string | undefined;
+    hasReferences?: boolean | undefined;
 }): string {
     return [
         parts.shotDescription.trim(),
         parts.motionInstruction?.trim(),
         STYLE_BLOCK,
         parts.paletteOverride?.trim(),
+        parts.hasReferences ? REFERENCE_BLOCK : undefined,
         NEGATIVE_BLOCK,
     ]
         .filter((s): s is string => Boolean(s && s.length > 0))

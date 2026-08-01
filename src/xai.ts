@@ -151,6 +151,48 @@ export async function generateImage(prompt: string): Promise<string> {
     return url;
 }
 
+/**
+ * Generate an image conditioned on one to three reference images.
+ *
+ * This is the `/images/edits` endpoint. Its main use here is continuity — feed
+ * an approved still from an earlier shot so a character's face, costume and
+ * proportions survive across shots, instead of every shot being an independent
+ * roll of the dice.
+ *
+ * The request shape differs by count, and both forms below were confirmed
+ * against the live API: a single reference goes in `image` as an object, while
+ * multiple go in `images` as an array. Passing an array to `image` is rejected
+ * with 422 (it wants bare strings there), so the two are not interchangeable.
+ */
+export async function editImage(prompt: string, referenceUrls: string[]): Promise<string> {
+    if (referenceUrls.length === 0) {
+        throw new XaiError('editImage requires at least one reference image');
+    }
+    const cfg = getConfig();
+    const first = referenceUrls[0]!;
+
+    const body: Record<string, unknown> =
+        referenceUrls.length === 1
+            ? { model: cfg.imageModel, prompt, image: { url: first, type: 'image_url' } }
+            : {
+                  model: cfg.imageModel,
+                  prompt,
+                  images: referenceUrls.map((url) => ({ url, type: 'image_url' })),
+              };
+
+    const res = await call<ImageResponse>('/images/edits', {
+        method: 'POST',
+        body,
+        timeoutMs: 180_000,
+    });
+
+    const url = res.data?.[0]?.url;
+    if (!url) {
+        throw new XaiError('xAI image edit response contained no URL');
+    }
+    return url;
+}
+
 // ------------------------------------------------------------ video generation
 
 interface VideoSubmitResponse {

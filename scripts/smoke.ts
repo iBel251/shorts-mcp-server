@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Offline smoke test. Boots the real Express app in-process with dummy
  * credentials and checks the things that do not require calling xAI or
  * Supabase: auth rejection, protocol discovery, session handling, the tool
@@ -21,7 +21,9 @@ const { StreamableHTTPClientTransport } = await import(
     '@modelcontextprotocol/sdk/client/streamableHttp.js'
 );
 const { createApp } = await import('../src/server.js');
-const { buildPrompt, STYLE_BLOCK, NEGATIVE_BLOCK } = await import('../src/config.js');
+const { buildPrompt, STYLE_BLOCK, NEGATIVE_BLOCK, REFERENCE_BLOCK } = await import(
+    '../src/config.js'
+);
 const { redact } = await import('../src/logger.js');
 
 const SECRET = process.env.SHORTS_SHARED_SECRET!;
@@ -46,7 +48,7 @@ try {
             body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
         });
         assert.equal(res.status, 401, `expected 401 without header, got ${res.status}`);
-        pass('POST without shared secret â†’ 401');
+        pass('POST without shared secret → 401');
     }
     {
         const res = await fetch(base, {
@@ -55,7 +57,7 @@ try {
             body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
         });
         assert.equal(res.status, 401, `expected 401 with wrong secret, got ${res.status}`);
-        pass('POST with wrong shared secret â†’ 401');
+        pass('POST with wrong shared secret → 401');
     }
 
     // --- every header name claude.ai will actually forward -------------------
@@ -74,7 +76,7 @@ try {
             `expected 200 for ${name}${value === SECRET ? '' : ' (with scheme)'}, got ${res.status}`,
         );
     }
-    pass('accepts all allowlisted header names (x-api-key, x-auth-token, authorization Â±Bearer)');
+    pass('accepts all allowlisted header names (x-api-key, x-auth-token, authorization ±Bearer)');
 
     // --- secret-in-URL, the only option without the header beta --------------
     {
@@ -83,7 +85,7 @@ try {
 
         const bad = await fetch(`${base}not-the-secret`, { method: 'HEAD' });
         assert.equal(bad.status, 401, `expected 401 for wrong path token, got ${bad.status}`);
-        pass('secret-in-URL path authenticates, wrong token â†’ 401');
+        pass('secret-in-URL path authenticates, wrong token → 401');
     }
 
     // --- HEAD discovery at the root path -----------------------------------
@@ -130,7 +132,7 @@ try {
             body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
         });
         assert.equal(res.status, 404, `expected 404 for unknown session, got ${res.status}`);
-        pass('unknown session id â†’ 404 (client re-initializes)');
+        pass('unknown session id → 404 (client re-initializes)');
     }
 
     // --- full MCP handshake over Streamable HTTP ----------------------------
@@ -153,7 +155,7 @@ try {
         ]);
         pass(`tools/list returns exactly the 5 specified tools`);
 
-        // No tool may expose a style parameter â€” style is server-owned.
+        // No tool may expose a style parameter — style is server-owned.
         for (const tool of tools) {
             const props = Object.keys(
                 (tool.inputSchema as { properties?: Record<string, unknown> }).properties ?? {},
@@ -183,6 +185,9 @@ try {
         assert.ok(propsOf('generate_still').includes('include_images'));
         assert.ok(propsOf('check_job').includes('include_images'));
         pass('generate_still and check_job expose include_images');
+
+        assert.ok(propsOf('generate_still').includes('reference_asset_ids'));
+        pass('generate_still accepts reference images by asset id');
 
         await client.close();
     }
@@ -230,6 +235,17 @@ try {
         const bare = buildPrompt({ shotDescription: 'A quiet room' });
         assert.ok(bare.includes(STYLE_BLOCK) && bare.includes(NEGATIVE_BLOCK));
         pass('prompt assembly: style applied even with no optional params');
+
+        // The continuity instruction is server-owned too, and must appear only
+        // when references are actually supplied.
+        const withRef = buildPrompt({ shotDescription: 'A quiet room', hasReferences: true });
+        assert.ok(withRef.includes(REFERENCE_BLOCK), 'reference block missing when referencing');
+        assert.ok(!bare.includes(REFERENCE_BLOCK), 'reference block leaked without references');
+        assert.ok(
+            withRef.indexOf(REFERENCE_BLOCK) < withRef.indexOf(NEGATIVE_BLOCK),
+            'reference block must precede the negative block',
+        );
+        pass('prompt assembly: reference block added only when references are passed');
     }
 
     // --- acceptance test 8: the key never survives redaction -----------------

@@ -9,6 +9,7 @@ import {
     DEFAULT_DURATION,
     DEFAULT_STILL_COUNT,
     MAX_DURATION,
+    MAX_REFERENCE_IMAGES,
     MAX_STILL_COUNT,
     MIN_DURATION,
 } from './config.js';
@@ -35,7 +36,7 @@ import {
 import { errorMessage, log } from './logger.js';
 import { assetPath, persistFromUrl } from './storage.js';
 import { advanceJobById } from './worker.js';
-import { generateImage, submitVideo } from './xai.js';
+import { editImage, generateImage, submitVideo } from './xai.js';
 
 /**
  * The five tools. The surface is deliberately small.
@@ -144,7 +145,11 @@ export function registerTools(server: McpServer): void {
                 'Generate still-image variations for a shot in the locked flat 2D style. ' +
                 'The style is applied server-side and cannot be overridden — use ' +
                 'palette_override only for per-beat colour shifts. All variations are ' +
-                'persisted to permanent storage before this returns. Pick one with approve_still.',
+                'persisted to permanent storage before this returns and come back as ' +
+                'viewable images. Pick one with approve_still.\n\n' +
+                'For any shot that reuses a character, location or prop from an earlier ' +
+                'shot, pass that shot\'s approved still in reference_asset_ids. Without a ' +
+                'reference each shot is an independent roll and the character will drift.',
             inputSchema: {
                 shot_description: z
                     .string()
@@ -182,6 +187,16 @@ export function registerTools(server: McpServer): void {
                     .boolean()
                     .optional()
                     .describe('Embed the variations as images. Default true; false saves tokens.'),
+                reference_asset_ids: z
+                    .array(z.string())
+                    .max(MAX_REFERENCE_IMAGES)
+                    .optional()
+                    .describe(
+                        `Up to ${MAX_REFERENCE_IMAGES} asset_ids from earlier shots to use as ` +
+                        'visual references. Use this to keep a character consistent across ' +
+                        'shots: pass the approved still that established them. Accepts stills ' +
+                        'and extracted video frames.',
+                    ),
             },
         },
         guard('generate_still', async (args) => {
@@ -197,6 +212,23 @@ export function registerTools(server: McpServer): void {
                 projectId = (await getOrCreateDefaultProject()).id;
             }
 
+            // Resolve references before creating the shot, so a bad id fails
+            // cleanly instead of leaving an empty shot behind.
+            const referenceIds = args.reference_asset_ids ?? [];
+            const referenceUrls: string[] = [];
+            for (const id of referenceIds) {
+                const asset = await getAsset(id);
+                if (!asset) return fail(`No asset with id ${id} to use as a reference`);
+                if (asset.kind === 'video') {
+                    return fail(
+                        `Asset ${id} is a video and cannot be a reference. Use its ` +
+                            'first_frame or last_frame asset instead.',
+                    );
+                }
+                // Our own storage URL — never an expiring upstream one.
+                referenceUrls.push(asset.public_url);
+            }
+
             const shotNumber = args.shot_number ?? (await nextShotNumber(projectId));
             const shot = await createShot({
                 projectId,
@@ -207,13 +239,17 @@ export function registerTools(server: McpServer): void {
             const prompt = buildPrompt({
                 shotDescription: args.shot_description,
                 paletteOverride: args.palette_override,
+                hasReferences: referenceUrls.length > 0,
             });
 
             // Generate in parallel, but tolerate partial failure — some stills
             // beat none, and the caller is told how many landed.
             const results = await Promise.allSettled(
                 Array.from({ length: count }, async () => {
-                    const upstreamUrl = await generateImage(prompt);
+                    const upstreamUrl =
+                        referenceUrls.length > 0
+                            ? await editImage(prompt, referenceUrls)
+                            : await generateImage(prompt);
                     const id = randomUUID();
                     const stored = await persistFromUrl(
                         upstreamUrl,
