@@ -63,13 +63,23 @@ function reject(req: Request, res: Response, hadCredential: boolean): void {
         method: req.method,
         hadCredential,
     });
-    res.status(401)
-        .set('WWW-Authenticate', 'Bearer realm="shorts-mcp"')
-        .json({
-            jsonrpc: '2.0',
-            error: { code: -32001, message: 'Unauthorized' },
-            id: null,
-        });
+    // Note the absence of a WWW-Authenticate header. Under the MCP spec a 401
+    // carrying one signals "this server does OAuth", and Claude responds by
+    // trying to dynamically register a client — which fails with a confusing
+    // "couldn't register with the sign-in service" message that sends you
+    // hunting for an OAuth Client ID you do not need. Omitting it makes a bad
+    // credential read as exactly what it is.
+    res.status(401).json({
+        jsonrpc: '2.0',
+        error: {
+            code: -32001,
+            message:
+                'Unauthorized. This server uses a shared secret, not OAuth. ' +
+                'Use https://<host>/<SHORTS_SHARED_SECRET> as the connector URL, ' +
+                'or send the secret in an x-api-key header.',
+        },
+        id: null,
+    });
 }
 
 export function requireSharedSecret(req: Request, res: Response, next: NextFunction): void {

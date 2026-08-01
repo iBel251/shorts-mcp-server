@@ -9,3 +9,6 @@ tmp/
 # Test-run artifacts saved for visual style/drift inspection
 acceptance-*.png
 cheap-*.png
+
+# Contains the shared secret in a copy-pasteable URL
+connector-url.txt
