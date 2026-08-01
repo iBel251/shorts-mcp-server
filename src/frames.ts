@@ -110,6 +110,37 @@ async function run(args: string[]): Promise<void> {
     }
 }
 
+/**
+ * Downscale an image to a JPEG small enough to embed in a tool response.
+ *
+ * The full-resolution PNGs are 400-600kB each, which is ~1.4MB of base64 for a
+ * pair — wasteful to ship on every poll when the job is only to eyeball style
+ * drift. A 640px-wide JPEG carries that judgement fine at roughly a tenth the
+ * size. The full-resolution PNG stays in storage and its URL is still returned.
+ */
+export async function makePreview(
+    image: Uint8Array,
+    maxWidth = Number(process.env.PREVIEW_MAX_WIDTH ?? 640),
+): Promise<{ data: Uint8Array; mimeType: string }> {
+    const dir = await mkdtemp(join(tmpdir(), 'shorts-preview-'));
+    const inPath = join(dir, 'in.png');
+    const outPath = join(dir, 'out.jpg');
+    try {
+        await writeFile(inPath, image);
+        await run([
+            '-y',
+            '-i', inPath,
+            // -2 keeps the height even and preserves aspect; never upscale.
+            '-vf', `scale='min(${maxWidth},iw)':-2`,
+            '-q:v', '4',
+            outPath,
+        ]);
+        return { data: new Uint8Array(await readFile(outPath)), mimeType: 'image/jpeg' };
+    } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+}
+
 /** Verify the bundled ffmpeg binary is usable. Called once at boot. */
 export async function checkFfmpeg(): Promise<string> {
     const { stdout } = await execFileAsync(FFMPEG, ['-version'], { windowsHide: true });

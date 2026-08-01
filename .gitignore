@@ -12,3 +12,5 @@ cheap-*.png
 
 # Contains the shared secret in a copy-pasteable URL
 connector-url.txt
+blockcheck-*.jpg
+*-preview.jpg

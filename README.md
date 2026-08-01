@@ -133,11 +133,16 @@ add new ones.
 
 | Tool | Behaviour |
 |---|---|
-| `generate_still` | Generates `count` (default 4, max 8) variations. Synchronous. |
+| `generate_still` | Generates `count` (default 4, max 8) variations. Synchronous. Returns them as **viewable images**. |
 | `approve_still` | Marks one still approved, un-approves siblings. |
 | `animate` | Submits image-to-video, returns a job id **immediately**. |
-| `check_job` | Polls a job. On done: video + first-frame + last-frame URLs. |
-| `list_shots` | Full project state. This is the cold-resume path. |
+| `check_job` | Polls a job. On done: video URL + first/last frames as **viewable images**. |
+| `list_shots` | Full project state, all still variations, and every project. Cold-resume path. |
+
+Projects are addressed by `project_name` on `generate_still` (created on first
+use) and `list_shots` returns every project, so multiple shorts stay separate
+without adding `create_project`/`list_projects` tools — the spec asks for
+exactly five.
 
 Typical flow:
 
@@ -174,14 +179,23 @@ written to Supabase Storage before the tool returns, and only our own URLs are
 handed back. The previous pipeline (Higgsfield) failed mid-project when upstream
 media IDs expired and the style reference plates became unreachable.
 
-### First and last frames are extracted automatically
+### First and last frames are extracted automatically — and embedded
 
 Claude cannot watch video, but it can compare two stills. The characteristic
 failure of these models is drift — starting in the correct flat style and
-progressively realism-ifying, or animating something meant to stay still. `animate`
-results therefore always come with frame 1 and the final frame as PNGs, so
-quality control is something Claude can do unprompted rather than a manual
-screenshotting loop.
+progressively realism-ifying, or animating something meant to stay still.
+`animate` results therefore always come with frame 1 and the final frame.
+
+They are returned as MCP **image content blocks**, not just URLs. Returning URLs
+alone made the feature inert: Claude cannot open arbitrary links, so the frames
+arrived as text it could not look at and the drift check still needed a human to
+screenshot them. `generate_still` embeds its variations for the same reason —
+the model is asked to pick one, so it has to be able to see them.
+
+Embedded images are downscaled to 640px-wide JPEGs (`PREVIEW_MAX_WIDTH`), about
+a tenth the size of the stored PNG at no cost to a style judgement. The
+full-resolution PNG stays in Storage and its URL is returned alongside. Pass
+`include_images: false` to either tool to suppress the blocks and save tokens.
 
 ### Jobs survive restarts
 

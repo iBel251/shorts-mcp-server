@@ -118,6 +118,35 @@ export async function createProject(name: string): Promise<ProjectRow> {
     ) as ProjectRow;
 }
 
+/**
+ * Address a project by name, creating it on first use.
+ *
+ * This is how a second short gets its own project without adding
+ * create_project/list_projects tools — the spec asks for exactly five tools and
+ * a small surface, so project handling rides on the tools that already exist.
+ */
+export async function getOrCreateProjectByName(name: string): Promise<ProjectRow> {
+    const trimmed = name.trim();
+    const existing = await db()
+        .from('projects')
+        .select('*')
+        .ilike('name', trimmed)
+        .order('created_at', { ascending: true })
+        .limit(1);
+    if (existing.error) throw new Error(`Look up project by name: ${existing.error.message}`);
+    const first = existing.data?.[0] as ProjectRow | undefined;
+    return first ?? (await createProject(trimmed));
+}
+
+export async function listProjects(): Promise<ProjectRow[]> {
+    const res = await db()
+        .from('projects')
+        .select('*')
+        .order('created_at', { ascending: true });
+    if (res.error) throw new Error(`List projects: ${res.error.message}`);
+    return (res.data ?? []) as ProjectRow[];
+}
+
 // ------------------------------------------------------------------ shots
 
 /** Next free shot number in a project, 1-based. */

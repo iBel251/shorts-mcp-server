@@ -162,13 +162,27 @@ try {
         }
         pass('no tool exposes a `style` parameter');
 
-        const animate = tools.find((t) => t.name === 'animate')!;
-        const animateProps = Object.keys(
-            (animate.inputSchema as { properties?: Record<string, unknown> }).properties ?? {},
-        );
-        assert.ok(animateProps.includes('motion_instruction'));
-        assert.ok(animateProps.includes('duration'));
+        const propsOf = (name: string): string[] =>
+            Object.keys(
+                (tools.find((t) => t.name === name)!.inputSchema as {
+                    properties?: Record<string, unknown>;
+                }).properties ?? {},
+            );
+
+        assert.ok(propsOf('animate').includes('motion_instruction'));
+        assert.ok(propsOf('animate').includes('duration'));
         pass('animate exposes motion_instruction and duration');
+
+        // Projects are addressable without adding tools, keeping the surface at
+        // the five the spec calls for.
+        assert.ok(propsOf('generate_still').includes('project_name'));
+        assert.ok(propsOf('list_shots').includes('project_name'));
+        pass('projects are addressable by name without extra tools');
+
+        // Token control for the embedded images.
+        assert.ok(propsOf('generate_still').includes('include_images'));
+        assert.ok(propsOf('check_job').includes('include_images'));
+        pass('generate_still and check_job expose include_images');
 
         await client.close();
     }

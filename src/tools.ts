@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { makePreview } from './frames.js';
+import { downloadWithRetry } from './storage.js';
 import {
     buildPrompt,
     DEFAULT_DURATION,
@@ -18,7 +20,9 @@ import {
     getAsset,
     getJob,
     getOrCreateDefaultProject,
+    getOrCreateProjectByName,
     getProject,
+    listProjects,
     getShot,
     latestJobsForShots,
     listAssetsForShots,
@@ -42,13 +46,60 @@ import { generateImage, submitVideo } from './xai.js';
  * palette shifts per story beat while the base style never does.
  */
 
+type ContentBlock = CallToolResult['content'][number];
+
 // Structured JSON in `content` as well as `structuredContent`, since clients
 // vary in which they surface to the model.
-function ok(payload: unknown): CallToolResult {
+function ok(payload: unknown, images: ContentBlock[] = []): CallToolResult {
     return {
-        content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }, ...images],
         structuredContent: payload as Record<string, unknown>,
     };
+}
+
+/**
+ * Previews are keyed by URL and immutable once generated, so a small cache
+ * spares us re-downloading and re-encoding on every repeat poll of a finished
+ * job. Bounded because these are ~60kB each.
+ */
+const previewCache = new Map<string, { data: string; mimeType: string }>();
+const PREVIEW_CACHE_MAX = 32;
+
+/**
+ * Turn a stored image URL into an actual MCP image block.
+ *
+ * Returning only URLs made the whole first/last-frame feature inert: Claude
+ * cannot open arbitrary links, so the frames arrived as text it could not look
+ * at and the drift check still needed a human to screenshot. Image content
+ * blocks put the pixels in front of the model directly. The URL is still
+ * returned alongside — it is the full-resolution PNG, and useful to a human.
+ */
+async function imageBlocks(url: string | undefined, label: string): Promise<ContentBlock[]> {
+    if (!url) return [];
+    try {
+        let preview = previewCache.get(url);
+        if (!preview) {
+            const original = await downloadWithRetry(url, 2);
+            const scaled = await makePreview(original);
+            preview = {
+                data: Buffer.from(scaled.data).toString('base64'),
+                mimeType: scaled.mimeType,
+            };
+            if (previewCache.size >= PREVIEW_CACHE_MAX) {
+                const oldest = previewCache.keys().next().value;
+                if (oldest) previewCache.delete(oldest);
+            }
+            previewCache.set(url, preview);
+        }
+        return [
+            { type: 'text', text: label },
+            { type: 'image', data: preview.data, mimeType: preview.mimeType },
+        ];
+    } catch (err) {
+        // A failed preview must never fail the tool — the URLs are still valid.
+        log.warn('preview generation failed', { error: errorMessage(err) });
+        return [{ type: 'text', text: `${label} — preview unavailable, use the URL` }];
+    }
 }
 
 function fail(message: string): CallToolResult {
@@ -103,6 +154,13 @@ export function registerTools(server: McpServer): void {
                     .string()
                     .optional()
                     .describe('Existing project id. A default project is used if omitted.'),
+                project_name: z
+                    .string()
+                    .optional()
+                    .describe(
+                        'Name of a project to use, created if it does not exist. Ignored when ' +
+                        'project_id is given. Use this to keep separate shorts apart.',
+                    ),
                 shot_number: z
                     .number()
                     .int()
@@ -120,6 +178,10 @@ export function registerTools(server: McpServer): void {
                     .max(MAX_STILL_COUNT)
                     .optional()
                     .describe(`Number of variations, default ${DEFAULT_STILL_COUNT}.`),
+                include_images: z
+                    .boolean()
+                    .optional()
+                    .describe('Embed the variations as images. Default true; false saves tokens.'),
             },
         },
         guard('generate_still', async (args) => {
@@ -129,6 +191,8 @@ export function registerTools(server: McpServer): void {
             if (projectId) {
                 const project = await getProject(projectId);
                 if (!project) return fail(`No project with id ${projectId}`);
+            } else if (args.project_name) {
+                projectId = (await getOrCreateProjectByName(args.project_name)).id;
             } else {
                 projectId = (await getOrCreateDefaultProject()).id;
             }
@@ -178,15 +242,36 @@ export function registerTools(server: McpServer): void {
 
             await setShotStatus(shot.id, 'still_ready');
 
-            return ok({
-                shot_id: shot.id,
-                project_id: projectId,
-                shot_number: shot.shot_number,
-                stills,
-                ...(failures.length > 0
-                    ? { warning: `${failures.length} of ${count} generations failed`, failures }
-                    : {}),
-            });
+            // Same reasoning as check_job: a variation the model cannot see is
+            // a variation it cannot choose between.
+            const images: ContentBlock[] = [];
+            if (args.include_images !== false) {
+                for (const [index, still] of stills.entries()) {
+                    images.push(
+                        ...(await imageBlocks(
+                            still.url,
+                            `Variation ${index + 1} — asset_id ${still.asset_id}`,
+                        )),
+                    );
+                }
+            }
+
+            return ok(
+                {
+                    shot_id: shot.id,
+                    project_id: projectId,
+                    shot_number: shot.shot_number,
+                    stills,
+                    hint:
+                        'The images below are the variations, in order. Judge them on style ' +
+                        'fidelity (flat 2D, even outlines, no photorealism) and composition, ' +
+                        'then call approve_still with the chosen asset_id.',
+                    ...(failures.length > 0
+                        ? { warning: `${failures.length} of ${count} generations failed`, failures }
+                        : {}),
+                },
+                images,
+            );
         }),
     );
 
@@ -305,12 +390,16 @@ export function registerTools(server: McpServer): void {
         {
             title: 'Check a video job',
             description:
-                'Poll an animate job. When done, returns the video URL plus first-frame ' +
-                'and last-frame PNGs. Compare those two frames to catch style drift — the ' +
-                'characteristic failure is starting flat and progressively turning ' +
-                'photorealistic, or moving something meant to stay still.',
+                'Poll an animate job. When done, returns the video URL plus the first and ' +
+                'last frames as viewable images. Look at both: the characteristic failure ' +
+                'is starting flat and progressively turning photorealistic, or moving ' +
+                'something meant to stay still. Report drift rather than accepting it.',
             inputSchema: {
                 job_id: z.string().min(1).describe('Job id returned by animate.'),
+                include_images: z
+                    .boolean()
+                    .optional()
+                    .describe('Embed the frames as images. Default true; set false to save tokens.'),
             },
         },
         guard('check_job', async (args) => {
@@ -328,16 +417,28 @@ export function registerTools(server: McpServer): void {
                 shot_id: job.shot_id,
                 status: job.status,
             };
+            const images: ContentBlock[] = [];
             if (job.status === 'done') {
+                const firstUrl = byId.get(job.first_frame_asset_id ?? '')?.public_url;
+                const lastUrl = byId.get(job.last_frame_asset_id ?? '')?.public_url;
                 payload.video_url = byId.get(job.video_asset_id ?? '')?.public_url;
-                payload.first_frame_url = byId.get(job.first_frame_asset_id ?? '')?.public_url;
-                payload.last_frame_url = byId.get(job.last_frame_asset_id ?? '')?.public_url;
+                payload.first_frame_url = firstUrl;
+                payload.last_frame_url = lastUrl;
                 payload.hint =
-                    'Compare first_frame_url and last_frame_url for style drift before accepting this shot.';
+                    'The two frames below are the first and last frame of this clip. Compare ' +
+                    'them for style drift (flat 2D holding? outlines even? anything moved that ' +
+                    'should not have?) before accepting this shot.';
+
+                if (args.include_images !== false) {
+                    images.push(
+                        ...(await imageBlocks(firstUrl, 'FIRST frame (start of clip):')),
+                        ...(await imageBlocks(lastUrl, 'LAST frame (end of clip):')),
+                    );
+                }
             }
             if (job.error) payload.error = job.error;
 
-            return ok(payload);
+            return ok(payload, images);
         }),
     );
 
@@ -348,21 +449,41 @@ export function registerTools(server: McpServer): void {
         {
             title: 'List shots',
             description:
-                'List every shot in a project with its status and current asset URLs. ' +
-                'This is the resume path — it returns enough to pick a half-finished ' +
-                'project back up cold in a new session.',
+                'List every shot in a project with its status and asset URLs, plus every ' +
+                'project that exists. This is the resume path — it returns enough to pick ' +
+                'a half-finished project back up cold in a new session, including all ' +
+                'unapproved still variations.',
             inputSchema: {
                 project_id: z
                     .string()
                     .optional()
                     .describe('Project id. The default project is used if omitted.'),
+                project_name: z
+                    .string()
+                    .optional()
+                    .describe('Name of an existing project. Ignored when project_id is given.'),
             },
         },
         guard('list_shots', async (args) => {
+            // Always enumerate projects: without a list tool this is how a cold
+            // session discovers what else is in flight.
+            const projects = await listProjects();
+
             let projectId = args.project_id;
             if (projectId) {
                 const project = await getProject(projectId);
                 if (!project) return fail(`No project with id ${projectId}`);
+            } else if (args.project_name) {
+                const match = projects.find(
+                    (p) => p.name.toLowerCase() === args.project_name!.trim().toLowerCase(),
+                );
+                if (!match) {
+                    return fail(
+                        `No project named "${args.project_name}". Existing projects: ` +
+                            (projects.map((p) => p.name).join(', ') || '(none)'),
+                    );
+                }
+                projectId = match.id;
             } else {
                 projectId = (await getOrCreateDefaultProject()).id;
             }
@@ -396,6 +517,15 @@ export function registerTools(server: McpServer): void {
                     still_asset_id: (approved ?? stills.at(-1))?.id,
                     still_approved: Boolean(approved),
                     still_count: stills.length,
+                    // Every variation, not just the approved one. Reporting a
+                    // count of 4 while returning a single id stranded the other
+                    // three: after a lost session there was no way to approve
+                    // one of them, or to re-examine a rejected take.
+                    stills: stills.map((s) => ({
+                        asset_id: s.id,
+                        url: s.public_url,
+                        approved: s.approved,
+                    })),
                     video_url: newest('video')?.public_url,
                     first_frame_url: newest('first_frame')?.public_url,
                     last_frame_url: newest('last_frame')?.public_url,
@@ -404,7 +534,12 @@ export function registerTools(server: McpServer): void {
                 };
             });
 
-            return ok({ project_id: projectId, shots: rows });
+            return ok({
+                project_id: projectId,
+                project_name: projects.find((p) => p.id === projectId)?.name,
+                shots: rows,
+                projects: projects.map((p) => ({ project_id: p.id, name: p.name })),
+            });
         }),
     );
 }
