@@ -67,6 +67,25 @@ export function createApp(): express.Express {
         res.json({ ok: true, sessions: transports.size });
     });
 
+    // OAuth discovery must 404, and must do so *before* the auth middleware.
+    //
+    // Claude probes /.well-known/oauth-protected-resource (and friends) before
+    // connecting. Letting those fall through to the gated mounts returned 401,
+    // which Claude reads as "this resource is OAuth-protected" — so it tries to
+    // dynamically register a client, fails, and reports "couldn't register with
+    // the sign-in service". A 404 is how a server says it has no OAuth, which
+    // sends Claude straight to the shared-secret path instead.
+    app.use((req: Request, res: Response, next) => {
+        if (req.path.startsWith('/.well-known/')) {
+            res.status(404).json({
+                error: 'not_found',
+                message: 'This server does not use OAuth. Authenticate with the shared secret.',
+            });
+            return;
+        }
+        next();
+    });
+
     // Two ways in, same endpoint, both gated:
     //
     //   /<secret>  — credential in the URL, for claude.ai connectors, which

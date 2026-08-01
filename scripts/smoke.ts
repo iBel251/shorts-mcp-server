@@ -95,6 +95,22 @@ try {
         pass('HEAD / supports protocol discovery and is gated');
     }
 
+    // --- OAuth discovery must 404, never 401 --------------------------------
+    // A 401 here makes Claude believe the server is OAuth-protected and send it
+    // into a dynamic client registration it cannot complete.
+    {
+        for (const path of [
+            '.well-known/oauth-protected-resource',
+            '.well-known/oauth-authorization-server',
+            '.well-known/openid-configuration',
+            `.well-known/oauth-protected-resource/${SECRET}`,
+        ]) {
+            const res = await fetch(`${base}${path}`);
+            assert.equal(res.status, 404, `${path} must 404 to disclaim OAuth, got ${res.status}`);
+        }
+        pass('OAuth discovery endpoints 404 (no accidental OAuth handshake)');
+    }
+
     // --- health probe is open ----------------------------------------------
     {
         const res = await fetch(`http://127.0.0.1:${port}/healthz`);
