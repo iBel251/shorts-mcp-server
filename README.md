@@ -98,8 +98,31 @@ Health probe for the host: `GET /healthz` (unauthenticated).
 
 Settings → Connectors → Add custom connector (Pro/Max/Team/Enterprise).
 
-- **URL:** your HTTPS URL, root path, e.g. `https://xyz.trycloudflare.com`
-- **Header:** `X-Shorts-Key: <your SHORTS_SHARED_SECRET>`
+**URL:** your HTTPS URL with the shared secret as the path segment:
+
+```
+https://<your-host>/<SHORTS_SHARED_SECRET>
+```
+
+**Leave Advanced settings (OAuth Client ID/Secret) blank.** Those fields are for
+OAuth client registration; the shared secret does not go there.
+
+Why the secret is in the URL: claude.ai's request-header support is a gated beta
+("contact Anthropic for early access"), so on most accounts the connector dialog
+offers nothing but OAuth fields — there is no place to type a key. A capability
+URL is the remaining option, and over HTTPS the path is inside the TLS session,
+making it about as strong as a bearer token.
+
+The tradeoff is that URLs get logged more casually than headers: your host's
+access logs will contain the secret. Our own logger redacts it, but treat the
+whole URL as a credential, and rotate `SHORTS_SHARED_SECRET` if it leaks.
+
+If you *do* have the header beta, or you're connecting from Claude Code, point
+at the bare root URL instead and send the secret as a header. Only allowlisted
+names reach the server — `authorization`, `x-api-key`, `x-auth-token` — and all
+three are accepted (`authorization` with or without a `Bearer ` prefix). A
+bespoke name like `x-shorts-key` will never arrive, which is why `AUTH_HEADER`
+defaults to `x-api-key`.
 
 Add it on the web first. iOS and Android can *use* remote MCP servers but cannot
 add new ones.
@@ -184,14 +207,22 @@ is a config change rather than a refactor.
 
 ### Auth
 
-A single static shared-secret header (`X-Shorts-Key`, configurable via
-`AUTH_HEADER`; `Authorization: Bearer` is also accepted), compared in constant
-time. Full OAuth with Dynamic Client Registration is overkill for a single-user
-service with no per-user data, but an unauthenticated public URL lets anyone
-burn your xAI credits.
+One static shared secret, accepted two ways and compared in constant time:
 
-It is isolated as Express middleware in [src/auth.ts](src/auth.ts) — swapping it
-for OAuth later touches no tool logic.
+- **`/<secret>`** — credential as the URL path segment, for claude.ai connectors.
+- **`/`** — credential in a header (`authorization`, `x-api-key`, or
+  `x-auth-token`), for Claude Code and anything else that can set one.
+
+Full OAuth with Dynamic Client Registration is overkill for a single-user service
+with no per-user data, but an unauthenticated public URL lets anyone burn your
+xAI credits.
+
+The spec assumed claude.ai connectors could send an arbitrary static header. They
+cannot: header support is a gated beta, and even with it, names are restricted to
+an allowlist that excludes bespoke ones. Hence the URL-path route.
+
+Both checks are Express middleware in [src/auth.ts](src/auth.ts), so swapping in
+OAuth later touches no tool logic.
 
 ### Secrets
 

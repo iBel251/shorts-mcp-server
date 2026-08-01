@@ -1,5 +1,5 @@
-/**
- * Live acceptance tests — spec section 10. THIS SPENDS MONEY.
+﻿/**
+ * Live acceptance tests â€” spec section 10. THIS SPENDS MONEY.
  *
  * ~$0.20 for 4 stills + ~$0.35 for one 5s 720p video.
  *
@@ -30,10 +30,10 @@ let capturedLogs = '';
 function check(name: string, condition: boolean, detail = ''): void {
     if (condition) {
         passed.push(name);
-        console.log(`  ok    ${name}${detail ? ` — ${detail}` : ''}`);
+        console.log(`  ok    ${name}${detail ? ` â€” ${detail}` : ''}`);
     } else {
         failed.push(name);
-        console.error(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
+        console.error(`  FAIL  ${name}${detail ? ` â€” ${detail}` : ''}`);
     }
 }
 
@@ -83,7 +83,7 @@ async function connect(): Promise<Client> {
     const client = new Client({ name: 'acceptance', version: '1.0.0' });
     await client.connect(
         new StreamableHTTPClientTransport(new URL(BASE), {
-            requestInit: { headers: { 'X-Shorts-Key': cfg.sharedSecret } },
+            requestInit: { headers: { 'X-Api-Key': cfg.sharedSecret } },
         }),
     );
     return client;
@@ -116,13 +116,13 @@ try {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
         });
-        check('6. request without shared secret → 401', res.status === 401, `got ${res.status}`);
+        check('6. request without shared secret â†’ 401', res.status === 401, `got ${res.status}`);
     }
 
     let client = await connect();
 
     // --- test 1: generate_still returns 4 stills, all in Supabase Storage --
-    console.log('\n[generating 4 stills — this costs ~$0.20]');
+    console.log('\n[generating 4 stills â€” this costs ~$0.20]');
     const still = await callTool(client, 'generate_still', {
         shot_description:
             'A lone figure in a long coat stands at the edge of a quiet harbour at dusk, seen from behind, boats still in the water',
@@ -172,7 +172,7 @@ try {
     );
 
     // --- test 3: animate returns a job id in under 2 seconds ---------------
-    console.log('\n[submitting animate — this costs ~$0.35]');
+    console.log('\n[submitting animate â€” this costs ~$0.35]');
     const t0 = Date.now();
     const anim = await callTool(client, 'animate', {
         asset_id: stills[0]!.asset_id,
@@ -211,7 +211,7 @@ try {
     while (Date.now() < deadline && job.status !== 'done' && job.status !== 'failed' && job.status !== 'expired') {
         await sleep(10_000);
         job = await callTool(client, 'check_job', { job_id: jobId });
-        process.stdout.write(`  …${job.status} (${Math.round((Date.now() - t0) / 1000)}s)\n`);
+        process.stdout.write(`  â€¦${job.status} (${Math.round((Date.now() - t0) / 1000)}s)\n`);
     }
     allResponses += JSON.stringify(job);
 

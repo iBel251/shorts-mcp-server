@@ -100,7 +100,10 @@ export function getConfig(): Config {
         supabaseServiceKey: required('SUPABASE_SERVICE_KEY'),
         supabaseBucket: optional('SUPABASE_BUCKET', 'shorts'),
         sharedSecret: required('SHORTS_SHARED_SECRET'),
-        authHeader: optional('AUTH_HEADER', 'x-shorts-key').toLowerCase(),
+        // Defaults to an allowlisted name: claude.ai only forwards connector
+        // headers from a fixed list (authorization, x-api-key, x-auth-token),
+        // so a bespoke name would never reach us.
+        authHeader: optional('AUTH_HEADER', 'x-api-key').toLowerCase(),
         videoModel: optional('VIDEO_MODEL', 'grok-imagine-video'),
         videoResolution: optional('VIDEO_RESOLUTION', '720p'),
         imageModel: optional('IMAGE_MODEL', 'grok-imagine-image-quality'),

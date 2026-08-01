@@ -27,16 +27,49 @@ function constantTimeEquals(a: string, b: string): boolean {
 }
 
 /** Pull the secret from the configured header, or from `Authorization: Bearer`. */
-function presentedSecret(req: Request, headerName: string): string | undefined {
-    const direct = req.headers[headerName];
-    if (typeof direct === 'string' && direct.length > 0) return direct;
-    if (Array.isArray(direct) && direct[0]) return direct[0];
+function headerValue(req: Request, name: string): string | undefined {
+    const raw = req.headers[name];
+    if (typeof raw === 'string' && raw.length > 0) return raw;
+    if (Array.isArray(raw) && raw[0]) return raw[0];
+    return undefined;
+}
 
+/**
+ * Pull the secret out of whichever header the client could actually send.
+ *
+ * claude.ai restricts connector headers to an allowlist — `authorization`,
+ * `x-api-key`, `x-auth-token` — so a bespoke name like `x-shorts-key` can never
+ * arrive from a claude.ai connector no matter how it is configured. All the
+ * allowlisted names are accepted here, plus whatever `AUTH_HEADER` is set to,
+ * so Claude Code and other clients keep working too.
+ */
+function presentedSecret(req: Request, headerName: string): string | undefined {
     const auth = req.headers.authorization;
-    if (typeof auth === 'string' && /^bearer\s+/i.test(auth)) {
-        return auth.replace(/^bearer\s+/i, '').trim();
+    if (typeof auth === 'string' && auth.length > 0) {
+        // Claude sends the value verbatim, so accept it with or without scheme.
+        return /^bearer\s+/i.test(auth) ? auth.replace(/^bearer\s+/i, '').trim() : auth.trim();
+    }
+    for (const name of [headerName, 'x-api-key', 'x-auth-token']) {
+        const value = headerValue(req, name);
+        if (value) return value;
     }
     return undefined;
+}
+
+function reject(req: Request, res: Response, hadCredential: boolean): void {
+    // Deliberately not logging the path: on the token-in-URL route it would
+    // record the presented credential.
+    log.warn('rejected unauthenticated request', {
+        method: req.method,
+        hadCredential,
+    });
+    res.status(401)
+        .set('WWW-Authenticate', 'Bearer realm="shorts-mcp"')
+        .json({
+            jsonrpc: '2.0',
+            error: { code: -32001, message: 'Unauthorized' },
+            id: null,
+        });
 }
 
 export function requireSharedSecret(req: Request, res: Response, next: NextFunction): void {
@@ -44,18 +77,34 @@ export function requireSharedSecret(req: Request, res: Response, next: NextFunct
     const presented = presentedSecret(req, cfg.authHeader);
 
     if (!presented || !constantTimeEquals(presented, cfg.sharedSecret)) {
-        log.warn('rejected unauthenticated request', {
-            method: req.method,
-            path: req.path,
-            hadHeader: Boolean(presented),
-        });
-        res.status(401)
-            .set('WWW-Authenticate', `Bearer realm="shorts-mcp"`)
-            .json({
-                jsonrpc: '2.0',
-                error: { code: -32001, message: 'Unauthorized' },
-                id: null,
-            });
+        reject(req, res, Boolean(presented));
+        return;
+    }
+    next();
+}
+
+/**
+ * Secret-in-the-URL auth, for clients that cannot set a header at all.
+ *
+ * claude.ai's request-header support is still a gated beta, so on most accounts
+ * the connector dialog offers nothing but OAuth fields. A capability URL is the
+ * remaining option: the credential is an unguessable path segment, which is as
+ * strong as a bearer token over HTTPS since the path is inside the TLS session.
+ *
+ * The tradeoff is that URLs are logged more casually than headers — the host's
+ * access logs will contain it. Our own logger redacts it (see logger.ts), but
+ * treat the full URL as the secret it is, and rotate SHORTS_SHARED_SECRET if it
+ * is ever pasted somewhere public.
+ */
+export function requirePathSecret(req: Request, res: Response, next: NextFunction): void {
+    const cfg = getConfig();
+    const token =
+        (req.params as Record<string, string | undefined>).token ??
+        // Fallback for mounts where the param is not merged in.
+        req.baseUrl.split('/').filter(Boolean).pop();
+
+    if (!token || !constantTimeEquals(token, cfg.sharedSecret)) {
+        reject(req, res, Boolean(token));
         return;
     }
     next();

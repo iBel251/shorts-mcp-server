@@ -3,7 +3,7 @@ import express, { type Request, type Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import { requireSharedSecret } from './auth.js';
+import { requirePathSecret, requireSharedSecret } from './auth.js';
 import { errorMessage, log } from './logger.js';
 import { registerTools } from './tools.js';
 
@@ -40,29 +40,44 @@ function buildMcpServer(): McpServer {
     return server;
 }
 
+/** The MCP endpoint itself, mountable at more than one path. */
+function mcpRoutes(): express.Router {
+    const router = express.Router();
+
+    // Protocol discovery. Claude probes with HEAD before connecting, and it
+    // must answer without a session or a body.
+    router.head('/', (_req: Request, res: Response) => {
+        res.status(200).set('Content-Type', 'application/json').end();
+    });
+    router.post('/', handlePost);
+    router.get('/', handleSessionRequest);
+    router.delete('/', handleSessionRequest);
+
+    return router;
+}
+
 export function createApp(): express.Express {
     const app = express();
     app.disable('x-powered-by');
     app.use(express.json({ limit: '4mb' }));
 
-    // Unauthenticated liveness probe for the host's health checks.
+    // Unauthenticated liveness probe for the host's health checks. Registered
+    // before the gated mounts so it stays reachable.
     app.get('/healthz', (_req: Request, res: Response) => {
         res.json({ ok: true, sessions: transports.size });
     });
 
-    // Protocol discovery. Claude probes with HEAD before connecting, and it
-    // must answer without a session or a body.
-    app.head('/', requireSharedSecret, (_req: Request, res: Response) => {
-        res.status(200).set('Content-Type', 'application/json').end();
-    });
-
-    // Everything below the auth middleware is gated. Tool logic never sees an
-    // unauthenticated request, and swapping this for OAuth touches only auth.ts.
-    app.use(requireSharedSecret);
-
-    app.post('/', handlePost);
-    app.get('/', handleSessionRequest);
-    app.delete('/', handleSessionRequest);
+    // Two ways in, same endpoint, both gated:
+    //
+    //   /<secret>  — credential in the URL, for claude.ai connectors, which
+    //                cannot set request headers unless the beta is enabled.
+    //   /          — credential in a header, for Claude Code and anything else
+    //                that can set one.
+    //
+    // Auth is middleware either way, so tool logic never sees an
+    // unauthenticated request and swapping in OAuth touches only auth.ts.
+    app.use('/:token', requirePathSecret, mcpRoutes());
+    app.use('/', requireSharedSecret, mcpRoutes());
 
     return app;
 }

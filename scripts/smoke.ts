@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Offline smoke test. Boots the real Express app in-process with dummy
  * credentials and checks the things that do not require calling xAI or
  * Supabase: auth rejection, protocol discovery, session handling, the tool
@@ -46,23 +46,51 @@ try {
             body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
         });
         assert.equal(res.status, 401, `expected 401 without header, got ${res.status}`);
-        pass('POST without shared secret → 401');
+        pass('POST without shared secret â†’ 401');
     }
     {
         const res = await fetch(base, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Shorts-Key': 'wrong-secret-value00' },
+            headers: { 'Content-Type': 'application/json', 'X-Api-Key': 'wrong-secret-value00' },
             body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
         });
         assert.equal(res.status, 401, `expected 401 with wrong secret, got ${res.status}`);
-        pass('POST with wrong shared secret → 401');
+        pass('POST with wrong shared secret â†’ 401');
+    }
+
+    // --- every header name claude.ai will actually forward -------------------
+    for (const [name, value] of [
+        ['X-Api-Key', SECRET],
+        ['X-Auth-Token', SECRET],
+        ['Authorization', `Bearer ${SECRET}`],
+        // claude.ai sends the value verbatim, so a user who omits "Bearer "
+        // must still get through rather than a confusing 401.
+        ['Authorization', SECRET],
+    ] as const) {
+        const res = await fetch(base, { method: 'HEAD', headers: { [name]: value } });
+        assert.equal(
+            res.status,
+            200,
+            `expected 200 for ${name}${value === SECRET ? '' : ' (with scheme)'}, got ${res.status}`,
+        );
+    }
+    pass('accepts all allowlisted header names (x-api-key, x-auth-token, authorization Â±Bearer)');
+
+    // --- secret-in-URL, the only option without the header beta --------------
+    {
+        const good = await fetch(`${base}${SECRET}`, { method: 'HEAD' });
+        assert.equal(good.status, 200, `expected 200 for /<secret>, got ${good.status}`);
+
+        const bad = await fetch(`${base}not-the-secret`, { method: 'HEAD' });
+        assert.equal(bad.status, 401, `expected 401 for wrong path token, got ${bad.status}`);
+        pass('secret-in-URL path authenticates, wrong token â†’ 401');
     }
 
     // --- HEAD discovery at the root path -----------------------------------
     {
         const bad = await fetch(base, { method: 'HEAD' });
         assert.equal(bad.status, 401);
-        const good = await fetch(base, { method: 'HEAD', headers: { 'X-Shorts-Key': SECRET } });
+        const good = await fetch(base, { method: 'HEAD', headers: { 'X-Api-Key': SECRET } });
         assert.equal(good.status, 200, `expected HEAD 200, got ${good.status}`);
         pass('HEAD / supports protocol discovery and is gated');
     }
@@ -80,20 +108,20 @@ try {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-Shorts-Key': SECRET,
+                'X-Api-Key': SECRET,
                 'mcp-session-id': '00000000-0000-4000-8000-000000000000',
             },
             body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
         });
         assert.equal(res.status, 404, `expected 404 for unknown session, got ${res.status}`);
-        pass('unknown session id → 404 (client re-initializes)');
+        pass('unknown session id â†’ 404 (client re-initializes)');
     }
 
     // --- full MCP handshake over Streamable HTTP ----------------------------
     {
         const client = new Client({ name: 'smoke', version: '1.0.0' });
         const transport = new StreamableHTTPClientTransport(new URL(base), {
-            requestInit: { headers: { 'X-Shorts-Key': SECRET } },
+            requestInit: { headers: { 'X-Api-Key': SECRET } },
         });
         await client.connect(transport);
         pass('Streamable HTTP initialize handshake at root path');
@@ -109,7 +137,7 @@ try {
         ]);
         pass(`tools/list returns exactly the 5 specified tools`);
 
-        // No tool may expose a style parameter — style is server-owned.
+        // No tool may expose a style parameter â€” style is server-owned.
         for (const tool of tools) {
             const props = Object.keys(
                 (tool.inputSchema as { properties?: Record<string, unknown> }).properties ?? {},
@@ -127,6 +155,27 @@ try {
         pass('animate exposes motion_instruction and duration');
 
         await client.close();
+    }
+
+    // --- the same handshake over the secret-in-URL route --------------------
+    // This is the route claude.ai actually uses, so a HEAD check is not enough:
+    // the transport must survive being mounted under a path prefix, including
+    // session id round-tripping.
+    {
+        const client = new Client({ name: 'smoke-url-auth', version: '1.0.0' });
+        await client.connect(
+            new StreamableHTTPClientTransport(new URL(`${base}${SECRET}`)),
+        );
+        const { tools } = await client.listTools();
+        assert.equal(tools.length, 5, `expected 5 tools over URL auth, got ${tools.length}`);
+
+        // Exercise a second round trip so session reuse under the prefix is
+        // covered, not just initialize.
+        const again = await client.listTools();
+        assert.equal(again.tools.length, 5);
+
+        await client.close();
+        pass('full MCP handshake + session reuse over /<secret> (no headers at all)');
     }
 
     // --- prompt assembly ----------------------------------------------------
