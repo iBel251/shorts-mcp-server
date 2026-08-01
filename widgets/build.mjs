@@ -76,6 +76,12 @@ figcaption {
   font-size: 11px; padding: 2px 8px; border-radius: 999px;
   border: 1px solid var(--line); background: var(--card); color: var(--muted);
 }
+.blocked {
+  aspect-ratio: 9 / 16; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 6px; padding: 8px;
+  text-align: center; font-size: 12px; color: var(--muted); background: var(--card);
+}
+.blocked a { color: var(--accent); }
 video { width: 100%; border-radius: 10px; border: 1px solid var(--line); background: #000; }
 .frames { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
 .frames figure { margin: 0; }

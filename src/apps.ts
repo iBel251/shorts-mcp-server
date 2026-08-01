@@ -48,41 +48,57 @@ export function registerApps(server: McpServer): void {
         return;
     }
     const csp = { resourceDomains: resourceDomains() };
+    const uiMetaForResource = { ui: { csp, prefersBorder: false } };
 
-    registerAppResource(
-        server,
+    /**
+     * The same UI metadata has to go in two places.
+     *
+     * On the resource listing it is only a *fallback*; the content item
+     * returned by `resources/read` carries the authoritative value. Declaring
+     * it on the listing alone means a host that reads CSP from the read result
+     * finds none — and sandbox CSP is deny-by-default, so every image and video
+     * in the widget is blocked while the widget itself renders perfectly. The
+     * failure is silent and looks exactly like a broken image host.
+     */
+    const register = (
+        name: string,
+        uri: string,
+        title: string,
+        description: string,
+        html: string,
+    ): void => {
+        registerAppResource(
+            server,
+            name,
+            uri,
+            { title, description, mimeType: RESOURCE_MIME_TYPE, _meta: uiMetaForResource },
+            async () => ({
+                contents: [
+                    {
+                        uri,
+                        mimeType: RESOURCE_MIME_TYPE,
+                        text: html,
+                        _meta: uiMetaForResource,
+                    },
+                ],
+            }),
+        );
+    };
+
+    register(
         'shorts-gallery',
         GALLERY_URI,
-        {
-            title: 'Still variations',
-            description:
-                'Gallery of generated still variations. Click one to approve it.',
-            mimeType: RESOURCE_MIME_TYPE,
-            _meta: { ui: { csp, prefersBorder: false } },
-        },
-        async () => ({
-            contents: [
-                { uri: GALLERY_URI, mimeType: RESOURCE_MIME_TYPE, text: GALLERY_HTML },
-            ],
-        }),
+        'Still variations',
+        'Gallery of generated still variations. Click one to approve it.',
+        GALLERY_HTML,
     );
 
-    registerAppResource(
-        server,
+    register(
         'shorts-player',
         PLAYER_URI,
-        {
-            title: 'Clip player',
-            description:
-                'Plays the finished clip and shows its first and last frame side by side.',
-            mimeType: RESOURCE_MIME_TYPE,
-            _meta: { ui: { csp, prefersBorder: false } },
-        },
-        async () => ({
-            contents: [
-                { uri: PLAYER_URI, mimeType: RESOURCE_MIME_TYPE, text: PLAYER_HTML },
-            ],
-        }),
+        'Clip player',
+        'Live job card, then the clip with its first and last frame side by side.',
+        PLAYER_HTML,
     );
 }
 

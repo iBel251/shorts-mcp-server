@@ -59,6 +59,32 @@ function render(stills: Still[], approvedId?: string, note?: string): void {
         ${note ? `<p class="note">${escapeHtml(note)}</p>` : ''}
     `;
 
+    // Sandbox CSP can still block the storage origin despite the resource
+    // declaring it. A blocked image should degrade to something clickable
+    // rather than a silent black rectangle.
+    for (const img of Array.from(root.querySelectorAll<HTMLImageElement>('.card img'))) {
+        img.addEventListener('error', () => {
+            const url = img.src;
+            const holder = document.createElement('div');
+            holder.className = 'blocked';
+            holder.innerHTML = `<span>image blocked by sandbox</span>`;
+            const link = document.createElement('a');
+            link.textContent = 'open ↗';
+            link.href = url;
+            link.target = '_blank';
+            link.rel = 'noreferrer';
+            link.addEventListener('click', (e) => {
+                // Prefer the host's opener; sandboxes often block target=_blank.
+                if (app.getHostCapabilities()?.openLinks) {
+                    e.preventDefault();
+                    void app.openLink({ url });
+                }
+            });
+            holder.appendChild(link);
+            img.replaceWith(holder);
+        });
+    }
+
     for (const card of Array.from(root.querySelectorAll<HTMLElement>('.card'))) {
         const approve = async () => {
             const assetId = card.dataset.asset;

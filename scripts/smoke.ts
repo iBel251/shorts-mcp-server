@@ -249,13 +249,30 @@ try {
         }
         pass('every tool-referenced UI resource is actually served');
 
-        // Sandbox CSP is deny-by-default: without this the widgets render empty.
-        const cspDomains = (resources[0] as any)?._meta?.ui?.csp?.resourceDomains;
-        assert.ok(
-            Array.isArray(cspDomains) && cspDomains.some((d: string) => d.includes('supabase')),
-            'UI resources must allowlist the storage origin for images and video',
-        );
-        pass('UI resources allowlist the Storage origin in their CSP');
+        // Sandbox CSP is deny-by-default: without this the widget renders fine
+        // but every image and video inside it is blocked — a silent failure
+        // that looks exactly like a broken image host.
+        //
+        // It must be present on BOTH the listing and the read result. The
+        // listing copy is only a fallback; the content item carries the
+        // authoritative value, and a host reading it there would otherwise find
+        // nothing.
+        for (const uri of uris) {
+            const listed = resources.find((r) => r.uri === uri) as any;
+            const listedCsp = listed?._meta?.ui?.csp?.resourceDomains;
+            assert.ok(
+                Array.isArray(listedCsp) && listedCsp.some((d: string) => d.includes('supabase')),
+                `${uri} listing must allowlist the storage origin`,
+            );
+
+            const read = await client.readResource({ uri });
+            const readCsp = (read.contents[0] as any)?._meta?.ui?.csp?.resourceDomains;
+            assert.ok(
+                Array.isArray(readCsp) && readCsp.some((d: string) => d.includes('supabase')),
+                `${uri} read result must allowlist the storage origin, not just the listing`,
+            );
+        }
+        pass('UI resources allowlist the Storage origin on both listing and read');
 
         await client.close();
     }
