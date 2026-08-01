@@ -111,6 +111,22 @@ async function run(args: string[]): Promise<void> {
 }
 
 /**
+ * Width for embedded previews, read per call so it can be changed from a host
+ * dashboard and take effect on restart.
+ *
+ * Doubles as a diagnostic: setting PREVIEW_MAX_WIDTH=64 makes the embedded
+ * images trivially small, which separates "the host dislikes the payload size"
+ * from "the host dislikes the structure" without generating anything. Clamped
+ * and validated so a typo degrades to the default instead of producing an
+ * ffmpeg filter that fails and drops the image entirely.
+ */
+function previewWidth(): number {
+    const parsed = Number(process.env.PREVIEW_MAX_WIDTH);
+    if (!Number.isFinite(parsed) || parsed < 16) return 640;
+    return Math.min(Math.round(parsed), 1920);
+}
+
+/**
  * Downscale an image to a JPEG small enough to embed in a tool response.
  *
  * The full-resolution PNGs are 400-600kB each, which is ~1.4MB of base64 for a
@@ -120,7 +136,7 @@ async function run(args: string[]): Promise<void> {
  */
 export async function makePreview(
     image: Uint8Array,
-    maxWidth = Number(process.env.PREVIEW_MAX_WIDTH ?? 640),
+    maxWidth = previewWidth(),
 ): Promise<{ data: Uint8Array; mimeType: string }> {
     const dir = await mkdtemp(join(tmpdir(), 'shorts-preview-'));
     const inPath = join(dir, 'in.png');

@@ -42,6 +42,11 @@ services:
       # inline UI, and this isolates the cause without a code change.
       - key: ENABLE_MCP_APPS
         value: "true"
+      # Width of the JPEGs embedded in tool results. Also a diagnostic: set to
+      # 64 to make them ~1.6kB, which separates "host dislikes the payload
+      # size" from "host dislikes the structure" without generating anything.
+      - key: PREVIEW_MAX_WIDTH
+        value: "640"
       # The free instance sleeps while idle, so the in-process worker only ticks
       # while the container is awake. Poll a little faster so a job that is
       # already in flight finishes promptly once something wakes it.
