@@ -76,6 +76,12 @@ function optional(name: string, fallback: string): string {
     return value && value.trim() !== '' ? value.trim() : fallback;
 }
 
+function boolean(name: string, fallback: boolean): boolean {
+    const raw = process.env[name]?.trim().toLowerCase();
+    if (!raw) return fallback;
+    return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
 function numeric(name: string, fallback: number): number {
     const raw = process.env[name];
     if (!raw || raw.trim() === '') return fallback;
@@ -102,9 +108,26 @@ export interface Config {
     jobPollIntervalMs: number;
     jobTimeoutMs: number;
     logLevel: string;
+    /**
+     * Whether to advertise MCP Apps UI widgets.
+     *
+     * A kill switch rather than a preference. Declaring a UI resource on a tool
+     * appears to change how some hosts handle that tool's result — the result
+     * is routed to the widget, and the image content blocks may stop reaching
+     * the model. That trade is bad: the model comparing frames is the
+     * load-bearing quality check, and a widget the human looks at does not
+     * replace it. Being able to turn widgets off from the dashboard, without a
+     * code change or redeploy, makes that an experiment instead of a guess.
+     */
+    enableMcpApps: boolean;
 }
 
 let cached: Config | undefined;
+
+/** Drop the memoised config so a changed env var takes effect. Tests only. */
+export function resetConfigCache(): void {
+    cached = undefined;
+}
 
 export function getConfig(): Config {
     if (cached) return cached;
@@ -126,6 +149,7 @@ export function getConfig(): Config {
         jobPollIntervalMs: numeric('JOB_POLL_INTERVAL_MS', 10_000),
         jobTimeoutMs: numeric('JOB_TIMEOUT_MS', 30 * 60 * 1000),
         logLevel: optional('LOG_LEVEL', 'info'),
+        enableMcpApps: boolean('ENABLE_MCP_APPS', true),
     };
     return cached;
 }

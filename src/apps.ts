@@ -4,6 +4,7 @@ import {
 } from '@modelcontextprotocol/ext-apps/server';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getConfig } from './config.js';
+import { log } from './logger.js';
 import { GALLERY_HTML, PLAYER_HTML } from './widgets.generated.js';
 
 /**
@@ -42,6 +43,10 @@ function resourceDomains(): string[] {
 }
 
 export function registerApps(server: McpServer): void {
+    if (!getConfig().enableMcpApps) {
+        log.info('mcp apps disabled by ENABLE_MCP_APPS');
+        return;
+    }
     const csp = { resourceDomains: resourceDomains() };
 
     registerAppResource(
@@ -88,7 +93,10 @@ export function registerApps(server: McpServer): void {
  * deprecated but still what some hosts read, and the SDK's own helper writes
  * both for exactly that reason.
  */
-export function uiMeta(resourceUri: string): Record<string, unknown> {
+export function uiMeta(resourceUri: string): Record<string, unknown> | undefined {
+    // Must honour the same switch as registerApps: a tool pointing at a
+    // resource the server no longer serves is worse than no widget at all.
+    if (!getConfig().enableMcpApps) return undefined;
     return {
         ui: { resourceUri },
         'ui/resourceUri': resourceUri,

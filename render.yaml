@@ -36,6 +36,12 @@ services:
         value: shorts
       - key: LOG_LEVEL
         value: info
+      # Kill switch for the inline widgets. Flip to false in the dashboard and
+      # restart if declaring UI resources stops image content blocks from
+      # reaching the model — the model's frame comparison matters more than the
+      # inline UI, and this isolates the cause without a code change.
+      - key: ENABLE_MCP_APPS
+        value: "true"
       # The free instance sleeps while idle, so the in-process worker only ticks
       # while the container is awake. Poll a little faster so a job that is
       # already in flight finishes promptly once something wakes it.

@@ -253,6 +253,23 @@ directly rather than `npm run build`, because esbuild's platform binary is not
 reliably present under `npm ci --ignore-scripts`. After editing a widget, run
 `npm run build:widgets` and commit the result.
 
+#### If images stop reaching the model: `ENABLE_MCP_APPS=false`
+
+Declaring a UI resource on a tool appears to change how some hosts handle that
+tool's *result* — it gets routed to the widget, and the image content blocks may
+stop reaching the model. That trade is a bad one: the model comparing first and
+last frames is the load-bearing quality check, and a widget the human looks at
+does not replace it.
+
+`ENABLE_MCP_APPS=false` removes both the resources and the tools' `_meta`, in
+one env var, no code change. Set it in the host dashboard and restart.
+
+To tell server faults from host rendering, run
+`npx tsx scripts/live-tool-check.ts` — it prints the actual content blocks a
+deployed tool call returns and validates that each image decodes to a real
+JPEG. If that shows valid images, the server is fine and the problem is
+host-side.
+
 ### Jobs survive restarts
 
 Job state lives entirely in Postgres. The worker re-reads open jobs from the

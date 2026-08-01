@@ -252,6 +252,58 @@ try {
         pass('full MCP handshake + session reuse over /<secret> (no headers at all)');
     }
 
+    // --- ENABLE_MCP_APPS kill switch ---------------------------------------
+    // Widgets are the prime suspect for image blocks going blank in some hosts,
+    // so turning them off must remove BOTH halves: a tool still pointing at a
+    // resource the server no longer serves is worse than no widget at all.
+    {
+        process.env.ENABLE_MCP_APPS = 'false';
+        const { resetConfigCache } = await import('../src/config.js');
+        resetConfigCache();
+
+        const offServer = createApp().listen(0);
+        await new Promise<void>((r) => offServer.once('listening', () => r()));
+        const offPort = (offServer.address() as AddressInfo).port;
+
+        const offClient = new Client({ name: 'smoke-apps-off', version: '1.0.0' });
+        try {
+            await offClient.connect(
+                new StreamableHTTPClientTransport(
+                    new URL(`http://127.0.0.1:${offPort}/${SECRET}`),
+                ),
+            );
+
+            // With nothing registered the server does not advertise the
+            // resources capability at all, so resources/list is -32601 rather
+            // than an empty list. Either outcome means "no widgets".
+            let offResourceCount = 0;
+            try {
+                offResourceCount = (await offClient.listResources()).resources.length;
+            } catch (err) {
+                assert.match(
+                    err instanceof Error ? err.message : String(err),
+                    /-32601|Method not found/,
+                    'resources/list should be absent, not failing for another reason',
+                );
+            }
+            assert.equal(offResourceCount, 0, 'no UI resources when disabled');
+
+            const { tools: offTools } = await offClient.listTools();
+            for (const name of ['generate_still', 'check_job']) {
+                const meta = (offTools.find((t) => t.name === name)?._meta ?? {}) as any;
+                assert.ok(!meta.ui?.resourceUri, `${name} must not reference a UI resource`);
+                assert.ok(!meta['ui/resourceUri'], `${name} must not carry the flat key`);
+            }
+            assert.equal(offTools.length, 5, 'tools themselves are unaffected');
+            pass('ENABLE_MCP_APPS=false removes both the resources and the tool _meta');
+        } finally {
+            await offClient.close().catch(() => {});
+            offServer.close();
+            process.env.ENABLE_MCP_APPS = 'true';
+            resetConfigCache();
+        }
+    }
+
     // --- prompt assembly ----------------------------------------------------
     {
         const prompt = buildPrompt({
