@@ -1,0 +1,123 @@
+import 'dotenv/config';
+
+/**
+ * The style constant. Owned by the server, versioned here, appended to every
+ * prompt that goes upstream.
+ *
+ * The xAI endpoints are stateless — nothing carries over between calls. In
+ * testing, omitting this block produced fully photorealistic output (total
+ * style collapse) and the model repeatedly tried to make characters face
+ * camera and speak. Keeping it server-side means neither the user nor Claude
+ * can forget it, and there is deliberately no `style` tool parameter.
+ */
+export const STYLE_BLOCK =
+    'Flat 2D animated illustration: thick black outlines of even weight, ' +
+    'flat colour fills with no gradients, no texture and no photographic ' +
+    'shading, muted desaturated palette.';
+
+export const NEGATIVE_BLOCK =
+    'Nobody speaks or talks. No faces toward camera. No text, no captions, ' +
+    'no watermark, no extra characters, no fast motion.';
+
+/** Bump when STYLE_BLOCK / NEGATIVE_BLOCK change, so old shots stay traceable. */
+export const STYLE_VERSION = 1;
+
+/**
+ * Assemble a full upstream prompt. The palette override slots in after the
+ * base style because palette shifts per story beat while the base style never
+ * does.
+ */
+export function buildPrompt(parts: {
+    shotDescription: string;
+    motionInstruction?: string | undefined;
+    paletteOverride?: string | undefined;
+}): string {
+    return [
+        parts.shotDescription.trim(),
+        parts.motionInstruction?.trim(),
+        STYLE_BLOCK,
+        parts.paletteOverride?.trim(),
+        NEGATIVE_BLOCK,
+    ]
+        .filter((s): s is string => Boolean(s && s.length > 0))
+        .join(' ');
+}
+
+// ------------------------------------------------------------------- env
+
+function required(name: string): string {
+    const value = process.env[name];
+    if (!value || value.trim() === '') {
+        throw new Error(
+            `Missing required environment variable ${name}. ` +
+                'Copy .env.example to .env and fill it in.',
+        );
+    }
+    return value.trim();
+}
+
+function optional(name: string, fallback: string): string {
+    const value = process.env[name];
+    return value && value.trim() !== '' ? value.trim() : fallback;
+}
+
+function numeric(name: string, fallback: number): number {
+    const raw = process.env[name];
+    if (!raw || raw.trim() === '') return fallback;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+        throw new Error(`Environment variable ${name} must be a number, got "${raw}".`);
+    }
+    return parsed;
+}
+
+export interface Config {
+    xaiApiKey: string;
+    xaiBaseUrl: string;
+    supabaseUrl: string;
+    supabaseServiceKey: string;
+    supabaseBucket: string;
+    sharedSecret: string;
+    authHeader: string;
+    /** Configurable so swapping models is a config change, not a refactor. */
+    videoModel: string;
+    videoResolution: string;
+    imageModel: string;
+    port: number;
+    jobPollIntervalMs: number;
+    jobTimeoutMs: number;
+    logLevel: string;
+}
+
+let cached: Config | undefined;
+
+export function getConfig(): Config {
+    if (cached) return cached;
+    cached = {
+        xaiApiKey: required('XAI_API_KEY'),
+        xaiBaseUrl: optional('XAI_BASE_URL', 'https://api.x.ai/v1').replace(/\/+$/, ''),
+        supabaseUrl: required('SUPABASE_URL').replace(/\/+$/, ''),
+        supabaseServiceKey: required('SUPABASE_SERVICE_KEY'),
+        supabaseBucket: optional('SUPABASE_BUCKET', 'shorts'),
+        sharedSecret: required('SHORTS_SHARED_SECRET'),
+        authHeader: optional('AUTH_HEADER', 'x-shorts-key').toLowerCase(),
+        videoModel: optional('VIDEO_MODEL', 'grok-imagine-video'),
+        videoResolution: optional('VIDEO_RESOLUTION', '720p'),
+        imageModel: optional('IMAGE_MODEL', 'grok-imagine-image-quality'),
+        port: numeric('PORT', 3000),
+        jobPollIntervalMs: numeric('JOB_POLL_INTERVAL_MS', 10_000),
+        jobTimeoutMs: numeric('JOB_TIMEOUT_MS', 30 * 60 * 1000),
+        logLevel: optional('LOG_LEVEL', 'info'),
+    };
+    return cached;
+}
+
+/** Aspect ratio is always 9:16 — vertical is native upstream, never reframe in post. */
+export const ASPECT_RATIO = '9:16';
+
+export const MIN_DURATION = 1;
+export const MAX_DURATION = 15;
+export const MAX_STILL_COUNT = 8;
+export const DEFAULT_STILL_COUNT = 4;
+export const DEFAULT_DURATION = 5;
+export const DEFAULT_PROJECT_NAME = 'Default Project';

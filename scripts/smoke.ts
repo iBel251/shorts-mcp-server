@@ -1,0 +1,171 @@
+/**
+ * Offline smoke test. Boots the real Express app in-process with dummy
+ * credentials and checks the things that do not require calling xAI or
+ * Supabase: auth rejection, protocol discovery, session handling, the tool
+ * surface, and prompt assembly.
+ *
+ * Run with: npm run smoke
+ */
+import assert from 'node:assert/strict';
+import type { AddressInfo } from 'node:net';
+
+// Dummy config, set before any module reads it.
+process.env.XAI_API_KEY ||= 'xai-smoketestkey0000000000';
+process.env.SUPABASE_URL ||= 'https://smoke.supabase.co';
+process.env.SUPABASE_SERVICE_KEY ||= 'smoke-service-key-0000';
+process.env.SHORTS_SHARED_SECRET ||= 'smoke-shared-secret-0000';
+process.env.LOG_LEVEL ||= 'error';
+
+const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+const { StreamableHTTPClientTransport } = await import(
+    '@modelcontextprotocol/sdk/client/streamableHttp.js'
+);
+const { createApp } = await import('../src/server.js');
+const { buildPrompt, STYLE_BLOCK, NEGATIVE_BLOCK } = await import('../src/config.js');
+const { redact } = await import('../src/logger.js');
+
+const SECRET = process.env.SHORTS_SHARED_SECRET!;
+const results: string[] = [];
+
+function pass(name: string): void {
+    results.push(name);
+    console.log(`  ok  ${name}`);
+}
+
+const server = createApp().listen(0);
+await new Promise<void>((r) => server.once('listening', () => r()));
+const { port } = server.address() as AddressInfo;
+const base = `http://127.0.0.1:${port}/`;
+
+try {
+    // --- acceptance test 6: unauthenticated requests are rejected -----------
+    {
+        const res = await fetch(base, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+        });
+        assert.equal(res.status, 401, `expected 401 without header, got ${res.status}`);
+        pass('POST without shared secret → 401');
+    }
+    {
+        const res = await fetch(base, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Shorts-Key': 'wrong-secret-value00' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+        });
+        assert.equal(res.status, 401, `expected 401 with wrong secret, got ${res.status}`);
+        pass('POST with wrong shared secret → 401');
+    }
+
+    // --- HEAD discovery at the root path -----------------------------------
+    {
+        const bad = await fetch(base, { method: 'HEAD' });
+        assert.equal(bad.status, 401);
+        const good = await fetch(base, { method: 'HEAD', headers: { 'X-Shorts-Key': SECRET } });
+        assert.equal(good.status, 200, `expected HEAD 200, got ${good.status}`);
+        pass('HEAD / supports protocol discovery and is gated');
+    }
+
+    // --- health probe is open ----------------------------------------------
+    {
+        const res = await fetch(`http://127.0.0.1:${port}/healthz`);
+        assert.equal(res.status, 200);
+        pass('GET /healthz is unauthenticated');
+    }
+
+    // --- a stale session id is rejected, not silently accepted ---------------
+    {
+        const res = await fetch(base, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Shorts-Key': SECRET,
+                'mcp-session-id': '00000000-0000-4000-8000-000000000000',
+            },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+        });
+        assert.equal(res.status, 404, `expected 404 for unknown session, got ${res.status}`);
+        pass('unknown session id → 404 (client re-initializes)');
+    }
+
+    // --- full MCP handshake over Streamable HTTP ----------------------------
+    {
+        const client = new Client({ name: 'smoke', version: '1.0.0' });
+        const transport = new StreamableHTTPClientTransport(new URL(base), {
+            requestInit: { headers: { 'X-Shorts-Key': SECRET } },
+        });
+        await client.connect(transport);
+        pass('Streamable HTTP initialize handshake at root path');
+
+        const { tools } = await client.listTools();
+        const names = tools.map((t) => t.name).sort();
+        assert.deepEqual(names, [
+            'animate',
+            'approve_still',
+            'check_job',
+            'generate_still',
+            'list_shots',
+        ]);
+        pass(`tools/list returns exactly the 5 specified tools`);
+
+        // No tool may expose a style parameter — style is server-owned.
+        for (const tool of tools) {
+            const props = Object.keys(
+                (tool.inputSchema as { properties?: Record<string, unknown> }).properties ?? {},
+            );
+            assert.ok(!props.includes('style'), `${tool.name} must not expose a style param`);
+        }
+        pass('no tool exposes a `style` parameter');
+
+        const animate = tools.find((t) => t.name === 'animate')!;
+        const animateProps = Object.keys(
+            (animate.inputSchema as { properties?: Record<string, unknown> }).properties ?? {},
+        );
+        assert.ok(animateProps.includes('motion_instruction'));
+        assert.ok(animateProps.includes('duration'));
+        pass('animate exposes motion_instruction and duration');
+
+        await client.close();
+    }
+
+    // --- prompt assembly ----------------------------------------------------
+    {
+        const prompt = buildPrompt({
+            shotDescription: 'A lone figure walks a rain-slick alley',
+            motionInstruction: 'slow push in',
+            paletteOverride: 'deep red palette',
+        });
+        assert.ok(prompt.includes(STYLE_BLOCK), 'style block must be present');
+        assert.ok(prompt.includes(NEGATIVE_BLOCK), 'negative block must be present');
+        assert.ok(
+            prompt.indexOf('deep red palette') > prompt.indexOf(STYLE_BLOCK),
+            'palette override must come after the style block',
+        );
+        assert.ok(
+            prompt.indexOf('slow push in') < prompt.indexOf(STYLE_BLOCK),
+            'motion instruction must come before the style block',
+        );
+        pass('prompt assembly: style + negative always applied, palette after style');
+
+        const bare = buildPrompt({ shotDescription: 'A quiet room' });
+        assert.ok(bare.includes(STYLE_BLOCK) && bare.includes(NEGATIVE_BLOCK));
+        pass('prompt assembly: style applied even with no optional params');
+    }
+
+    // --- acceptance test 8: the key never survives redaction -----------------
+    {
+        const leaky = `call failed: Authorization: Bearer ${process.env.XAI_API_KEY} rejected`;
+        const cleaned = redact(leaky);
+        assert.ok(!cleaned.includes(process.env.XAI_API_KEY!), 'xAI key leaked through redact()');
+        assert.ok(cleaned.includes('[redacted]'));
+        pass('redact() strips the xAI key from error text');
+    }
+
+    console.log(`\n${results.length} checks passed.`);
+} catch (err) {
+    console.error('\nSMOKE TEST FAILED:', err instanceof Error ? err.message : err);
+    process.exitCode = 1;
+} finally {
+    server.close();
+}

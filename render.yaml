@@ -1,0 +1,43 @@
+# Render Blueprint. Create the service via New → Blueprint and point it at this repo.
+#
+# Every secret is marked sync:false, so Render prompts for it in the dashboard
+# and it never lives in the repo.
+
+services:
+  - type: web
+    name: shorts-mcp-server
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    # Unauthenticated liveness probe. Render pings this; it also happens to keep
+    # the instance from idling out between uses.
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    envVars:
+      - key: XAI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SHORTS_SHARED_SECRET
+        sync: false
+
+      # Spec defaults. Change here (or in the dashboard) to swap models —
+      # never in code.
+      - key: VIDEO_MODEL
+        value: grok-imagine-video
+      - key: VIDEO_RESOLUTION
+        value: 720p
+      - key: IMAGE_MODEL
+        value: grok-imagine-image-quality
+
+      - key: SUPABASE_BUCKET
+        value: shorts
+      - key: LOG_LEVEL
+        value: info
+      # The free instance sleeps while idle, so the in-process worker only ticks
+      # while the container is awake. Poll a little faster so a job that is
+      # already in flight finishes promptly once something wakes it.
+      - key: JOB_POLL_INTERVAL_MS
+        value: "5000"

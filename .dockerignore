@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.env
+.env.*
+!.env.example
+*.log
+tmp
+scripts
+supabase
+acceptance-*.png
+cheap-*.png
+README.md
+shorts-mcp-server-spec.md
+tsconfig.check.json
