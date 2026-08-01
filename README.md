@@ -222,6 +222,14 @@ a tenth the size of the stored PNG at no cost to a style judgement. The
 full-resolution PNG stays in Storage and its URL is returned alongside. Pass
 `include_images: false` to either tool to suppress the blocks and save tokens.
 
+**`generate_still` returns one contact sheet, not one image per variation.**
+Four variations tile into a single image (597kB of PNGs → a 69kB JPEG in
+~130ms), so a call costs one image slot instead of four. That matters because
+hosts may cap how many images a conversation will carry, and four blocks per
+call exhausts such a budget quickly — after which later images arrive as empty
+slots. Side by side is also the better way to compare variations. Pass
+`image_mode: "individual"` for one block each.
+
 ### Inline UI — MCP Apps (SEP-1865)
 
 Image content blocks go to the *model*; they put nothing on the chat surface for

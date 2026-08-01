@@ -157,6 +157,55 @@ export async function makePreview(
     }
 }
 
+/**
+ * Tile several images into one contact sheet, left to right.
+ *
+ * Four variations returned as four image blocks is the greediest possible
+ * shape: if a host caps how many images a conversation will carry, a single
+ * call can exhaust the budget and every later image arrives as an empty slot.
+ * One sheet costs one slot regardless of the variation count, and side by side
+ * is a better way to compare them anyway.
+ */
+export async function makeContactSheet(
+    images: Uint8Array[],
+    cellWidth = 320,
+): Promise<{ data: Uint8Array; mimeType: string }> {
+    if (images.length === 0) throw new Error('makeContactSheet needs at least one image');
+    if (images.length === 1) return makePreview(images[0]!, cellWidth * 2);
+
+    const dir = await mkdtemp(join(tmpdir(), 'shorts-sheet-'));
+    try {
+        const inputs: string[] = [];
+        for (const [i, image] of images.entries()) {
+            const path = join(dir, `in${i}.png`);
+            await writeFile(path, image);
+            inputs.push('-i', path);
+        }
+
+        // Scale every cell to identical dimensions first: hstack requires it,
+        // and upstream is not guaranteed to return a consistent size.
+        const scale = images
+            .map((_, i) => `[${i}:v]scale=${cellWidth}:-2,setsar=1[c${i}]`)
+            .join(';');
+        const stack = `${images.map((_, i) => `[c${i}]`).join('')}hstack=inputs=${images.length}[out]`;
+
+        const outPath = join(dir, 'sheet.jpg');
+        await run([
+            '-y',
+            ...inputs,
+            '-filter_complex', `${scale};${stack}`,
+            '-map', '[out]',
+            '-frames:v', '1',
+            '-q:v', '4',
+            outPath,
+        ]);
+
+        return { data: new Uint8Array(await readFile(outPath)), mimeType: 'image/jpeg' };
+    } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+}
+
 /** Verify the bundled ffmpeg binary is usable. Called once at boot. */
 export async function checkFfmpeg(): Promise<string> {
     const { stdout } = await execFileAsync(FFMPEG, ['-version'], { windowsHide: true });

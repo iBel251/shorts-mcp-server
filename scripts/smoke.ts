@@ -189,6 +189,18 @@ try {
         assert.ok(propsOf('generate_still').includes('reference_asset_ids'));
         pass('generate_still accepts reference images by asset id');
 
+        // One image slot per call by default, not one per variation: hosts may
+        // cap images per conversation, and four blocks per call burns it fast.
+        assert.ok(propsOf('generate_still').includes('image_mode'));
+        const modeSchema = (
+            tools.find((t) => t.name === 'generate_still')!.inputSchema as any
+        ).properties.image_mode;
+        assert.deepEqual((modeSchema.enum ?? modeSchema.anyOf?.map((a: any) => a.const)).sort(), [
+            'individual',
+            'sheet',
+        ]);
+        pass('generate_still exposes image_mode (sheet | individual)');
+
         // --- MCP Apps (SEP-1865) UI resources ---------------------------------
         const metaOf = (name: string): any => tools.find((t) => t.name === name)?._meta ?? {};
         assert.equal(metaOf('generate_still').ui?.resourceUri, 'ui://shorts/gallery.html');

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { GALLERY_URI, PLAYER_URI, uiMeta } from './apps.js';
-import { makePreview } from './frames.js';
+import { makeContactSheet, makePreview } from './frames.js';
 import { downloadWithRetry } from './storage.js';
 import {
     buildPrompt,
@@ -104,6 +104,40 @@ async function imageBlocks(url: string | undefined, label: string): Promise<Cont
     }
 }
 
+/**
+ * One image block containing every variation tiled side by side.
+ *
+ * Costs a single image slot no matter how many variations there are, which
+ * matters if the host limits images per conversation. Falls back to text on
+ * failure — the URLs in the payload remain valid either way.
+ */
+async function contactSheetBlocks(urls: string[], label: string): Promise<ContentBlock[]> {
+    const key = `sheet:${urls.join('|')}`;
+    try {
+        let preview = previewCache.get(key);
+        if (!preview) {
+            const originals = await Promise.all(urls.map((u) => downloadWithRetry(u, 2)));
+            const sheet = await makeContactSheet(originals);
+            preview = {
+                data: Buffer.from(sheet.data).toString('base64'),
+                mimeType: sheet.mimeType,
+            };
+            if (previewCache.size >= PREVIEW_CACHE_MAX) {
+                const oldest = previewCache.keys().next().value;
+                if (oldest) previewCache.delete(oldest);
+            }
+            previewCache.set(key, preview);
+        }
+        return [
+            { type: 'text', text: label },
+            { type: 'image', data: preview.data, mimeType: preview.mimeType },
+        ];
+    } catch (err) {
+        log.warn('contact sheet failed', { error: errorMessage(err) });
+        return [{ type: 'text', text: `${label} — preview unavailable, use the URLs` }];
+    }
+}
+
 function fail(message: string): CallToolResult {
     return {
         content: [{ type: 'text', text: JSON.stringify({ error: message }, null, 2) }],
@@ -191,6 +225,14 @@ export function registerTools(server: McpServer): void {
                     .boolean()
                     .optional()
                     .describe('Embed the variations as images. Default true; false saves tokens.'),
+                image_mode: z
+                    .enum(['sheet', 'individual'])
+                    .optional()
+                    .describe(
+                        'How to embed the variations. "sheet" (default) tiles them into one ' +
+                        'image, costing a single image slot. "individual" sends one image per ' +
+                        'variation, which some hosts cap per conversation.',
+                    ),
                 reference_asset_ids: z
                     .array(z.string())
                     .max(MAX_REFERENCE_IMAGES)
@@ -284,15 +326,31 @@ export function registerTools(server: McpServer): void {
 
             // Same reasoning as check_job: a variation the model cannot see is
             // a variation it cannot choose between.
+            //
+            // One contact sheet by default rather than one block per variation.
+            // Four blocks is the greediest possible shape against any host cap
+            // on images per conversation, and a single call could exhaust it.
             const images: ContentBlock[] = [];
             if (args.include_images !== false) {
-                for (const [index, still] of stills.entries()) {
+                const mode = args.image_mode ?? 'sheet';
+                if (mode === 'sheet' && stills.length > 1) {
                     images.push(
-                        ...(await imageBlocks(
-                            still.url,
-                            `Variation ${index + 1} — asset_id ${still.asset_id}`,
+                        ...(await contactSheetBlocks(
+                            stills.map((s) => s.url),
+                            `Variations left to right: ${stills
+                                .map((s, i) => `${i + 1}=${s.asset_id}`)
+                                .join(', ')}`,
                         )),
                     );
+                } else {
+                    for (const [index, still] of stills.entries()) {
+                        images.push(
+                            ...(await imageBlocks(
+                                still.url,
+                                `Variation ${index + 1} — asset_id ${still.asset_id}`,
+                            )),
+                        );
+                    }
                 }
             }
 
