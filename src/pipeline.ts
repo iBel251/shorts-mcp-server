@@ -212,14 +212,30 @@ export interface ApproveResult {
     url: string;
 }
 
-/** Mark one still as its shot's approved plate, un-approving every sibling. */
+/**
+ * Mark one still as its shot's approved plate, un-approving every sibling.
+ *
+ * Re-approving the plate that is already approved is a no-op, and must not
+ * touch the shot's status. Demoting unconditionally meant one stray click on
+ * the approved variation of a finished shot threw away its `done` state — the
+ * clip and its job were untouched, but the shot read as un-rendered and
+ * dropped out of the rough cut and the done count. Choosing a *different*
+ * plate does still demote, because at that point the rendered clip no longer
+ * matches the chosen frame.
+ */
 export async function approveStill(assetId: string): Promise<ApproveResult> {
     const asset = await getAsset(assetId);
     if (!asset) throw new NotFound(`No asset with id ${assetId}`);
     if (asset.kind !== 'still') throw new Error(`Asset ${assetId} is a ${asset.kind}, not a still`);
 
+    const alreadyApproved = asset.approved;
     await approveStillExclusively(asset);
-    await setShotStatus(asset.shot_id, 'approved');
+
+    const shot = await getShot(asset.shot_id);
+    const settled = shot?.status === 'done' || shot?.status === 'animating';
+    if (!alreadyApproved || !settled) {
+        await setShotStatus(asset.shot_id, 'approved');
+    }
 
     return { asset_id: asset.id, shot_id: asset.shot_id, url: asset.public_url };
 }
