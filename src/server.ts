@@ -28,6 +28,8 @@ function buildMcpServer(): McpServer {
                 'Pipeline: generate_still → approve_still → animate → check_job. ' +
                 'For externally generated images, use import_image → approve_still → ' +
                 'animate → check_job. ' +
+                'To replace a bad externally generated scene still, call import_image with ' +
+                'the existing shot_id, then approve_still on the returned replacement asset_id. ' +
                 'For story projects, save_story_manifest and import_reference_image first, ' +
                 'then use get_story_manifest to retrieve reference asset ids for scenes. ' +
                 'Use list_shots to resume a project cold.\n\n' +

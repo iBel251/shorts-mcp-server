@@ -188,7 +188,8 @@ try {
         assert.ok(propsOf('import_image').includes('image_url'));
         assert.ok(propsOf('import_image').includes('image_base64'));
         assert.ok(propsOf('import_image').includes('image_file'));
-        pass('import_image accepts URL, base64 and file-like image payloads');
+        assert.ok(propsOf('import_image').includes('shot_id'));
+        pass('import_image accepts URL, base64, file-like image payloads and shot replacements');
 
         assert.ok(propsOf('import_reference_image').includes('role'));
         assert.ok(propsOf('import_reference_image').includes('label'));
@@ -227,12 +228,16 @@ try {
         const metaOf = (name: string): any => tools.find((t) => t.name === name)?._meta ?? {};
         assert.equal(metaOf('generate_still').ui?.resourceUri, 'ui://shorts/gallery.html');
         assert.equal(metaOf('check_job').ui?.resourceUri, 'ui://shorts/player.html');
+        assert.equal(metaOf('import_image').ui?.resourceUri, undefined);
+        assert.equal(metaOf('import_reference_image').ui?.resourceUri, undefined);
+        assert.equal(metaOf('import_image')['ui/resourceUri'], undefined);
+        assert.equal(metaOf('import_reference_image')['ui/resourceUri'], undefined);
         // animate too, so a job card appears at submission rather than only
         // once someone polls.
         assert.equal(metaOf('animate').ui?.resourceUri, 'ui://shorts/player.html');
         // The flat key is deprecated but still what some hosts read.
         assert.equal(metaOf('generate_still')['ui/resourceUri'], 'ui://shorts/gallery.html');
-        pass('generate_still, animate and check_job reference their UI resources');
+        pass('generate_still, animate and check_job reference UI resources; imports stay plain');
 
         const { resources } = await client.listResources();
         const uris = resources.map((r) => r.uri).sort();

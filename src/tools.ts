@@ -453,6 +453,7 @@ async function resolveProjectId(args: {
 
 async function importStillAsset(input: {
     projectId: string;
+    shotId?: string | undefined;
     shotNumber?: number | undefined;
     description: string;
     imported: Awaited<ReturnType<typeof loadImportedImage>>;
@@ -466,12 +467,17 @@ async function importStillAsset(input: {
     mimeType: string;
     source?: string;
 }> {
-    const shotNumber = input.shotNumber ?? (await nextShotNumber(input.projectId));
-    const shot = await createShot({
-        projectId: input.projectId,
-        shotNumber,
-        description: input.description,
-    });
+    const shot = input.shotId
+        ? await getShot(input.shotId)
+        : await createShot({
+              projectId: input.projectId,
+              shotNumber: input.shotNumber ?? (await nextShotNumber(input.projectId)),
+              description: input.description,
+          });
+    if (!shot) throw new Error(`No shot with id ${input.shotId}`);
+    if (shot.project_id !== input.projectId) {
+        throw new Error(`Shot ${shot.id} does not belong to project ${input.projectId}`);
+    }
 
     const id = randomUUID();
     const stored = await putBuffer(
@@ -768,9 +774,8 @@ export function registerTools(server: McpServer): void {
                 'approved and animated. Use this when an image was created outside this ' +
                 'server, such as ChatGPT image generation. Provide exactly one of ' +
                 'image_url, image_base64, or image_file.data. The server validates PNG, ' +
-                'JPEG, or WebP bytes, persists them to Storage, creates a shot, and ' +
+                'JPEG, or WebP bytes, persists them to Storage, creates or reuses a shot, and ' +
                 'returns an asset_id for approve_still and animate.',
-            _meta: uiMeta(GALLERY_URI),
             inputSchema: {
                 image_url: z
                     .string()
@@ -817,6 +822,12 @@ export function registerTools(server: McpServer): void {
                     .positive()
                     .optional()
                     .describe('Shot number within the project. Auto-assigned if omitted.'),
+                shot_id: z
+                    .string()
+                    .optional()
+                    .describe(
+                        'Existing shot id to add this image as a new still version. Use this when replacing a faulty scene image.',
+                    ),
                 shot_description: z
                     .string()
                     .optional()
@@ -875,14 +886,19 @@ export function registerTools(server: McpServer): void {
             }
 
             const image = inspectImage(imported.bytes, imported.contentType);
-            const shotNumber = args.shot_number ?? (await nextShotNumber(projectId));
-            const shot = await createShot({
-                projectId,
-                shotNumber,
-                description:
-                    args.shot_description?.trim() ||
-                    'Imported still generated outside the shorts MCP server',
-            });
+            const shot = args.shot_id
+                ? await getShot(args.shot_id)
+                : await createShot({
+                      projectId,
+                      shotNumber: args.shot_number ?? (await nextShotNumber(projectId)),
+                      description:
+                          args.shot_description?.trim() ||
+                          'Imported still generated outside the shorts MCP server',
+                  });
+            if (!shot) return fail(`No shot with id ${args.shot_id}`);
+            if (shot.project_id !== projectId) {
+                return fail(`Shot ${shot.id} does not belong to project ${projectId}`);
+            }
 
             const id = randomUUID();
             const stored = await putBuffer(
@@ -915,9 +931,13 @@ export function registerTools(server: McpServer): void {
                         ? { width: image.width, height: image.height }
                         : {}),
                     ...(imported.source ? { source: imported.source } : {}),
+                    ...(args.shot_id ? { version_of_shot_id: args.shot_id } : {}),
                     hint:
-                        'Imported as a still. Call approve_still with this asset_id, then ' +
-                        'animate with the same asset_id and a motion_instruction.',
+                        (args.shot_id
+                            ? 'Imported as a replacement still version for the existing shot. '
+                            : 'Imported as a still. ') +
+                        'Call approve_still with this asset_id, then animate with the same ' +
+                        'asset_id and a motion_instruction.',
                 },
                 images,
             );
@@ -934,7 +954,6 @@ export function registerTools(server: McpServer): void {
                 'Import an external image and tag it as a reusable story reference, such ' +
                 'as a character design, expression sheet, prop, location or style plate. ' +
                 'Returns an asset_id that can be passed in generate_still.reference_asset_ids.',
-            _meta: uiMeta(GALLERY_URI),
             inputSchema: {
                 image_url: z.string().url().optional().describe('Public or signed HTTP(S) URL.'),
                 image_base64: z
