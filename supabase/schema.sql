@@ -43,6 +43,13 @@ create table if not exists assets (
 
 create index if not exists assets_shot_idx on assets (shot_id, kind);
 
+-- The server-side vision critique for a still, stored rather than recomputed.
+-- It was previously returned once by generate_still and then lost, so a
+-- resumed session — or the web UI, which never saw the original tool call —
+-- had no way to show why a variation was judged bad. Added separately from
+-- the create above so existing databases pick it up on a re-run.
+alter table assets add column if not exists critique jsonb;
+
 -- -------------------------------------------------------------------- jobs
 -- Durable video-job state. The spec requires jobs to survive a process
 -- restart, so nothing about an in-flight job lives in memory: the worker

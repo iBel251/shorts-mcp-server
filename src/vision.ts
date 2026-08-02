@@ -1,5 +1,6 @@
+import { chatText, parseJson } from './chat.js';
 import { getConfig, NEGATIVE_BLOCK, STYLE_BLOCK } from './config.js';
-import { errorMessage, log, redact } from './logger.js';
+import { errorMessage, log } from './logger.js';
 
 /**
  * Server-side vision pass.
@@ -24,7 +25,7 @@ export interface Critique {
     verdict: 'accept' | 'regenerate';
     /** One line, why. */
     reason: string;
-    /** Holds the flat 2D look: even black outlines, flat fills, no photorealism. */
+    /** Holds the dark editorial cartoon look: noir lighting, exaggerated caricature shapes, no realism. */
     style_ok: boolean;
     /** How many people are visible. The pipeline usually wants 0 or 1. */
     people: number;
@@ -32,7 +33,7 @@ export interface Critique {
     faces_to_camera: boolean;
     /** Any lettering, captions, signage or watermark — also explicitly banned. */
     visible_text: boolean;
-    /** Palette reads muted and desaturated rather than saturated or warm. */
+    /** Palette keeps limited dark green, burnt orange, red and black colors. */
     palette_ok: boolean;
     /** Framing and camera position match what was asked for. */
     framing_ok: boolean;
@@ -67,10 +68,12 @@ function rubric(shotDescription: string, paletteOverride?: string): string {
         '',
         'Judge only what is actually visible. Do not be generous: this exists to catch',
         'failures, and a wrong "accept" is far more costly than a wrong "regenerate".',
-        'Set style_ok false for any gradient shading, photographic texture, soft lighting',
-        'or realistic skin. Set verdict to "regenerate" if style_ok, palette_ok or',
-        'framing_ok is false, if visible_text is true, if faces_to_camera is true, or if',
-        'anatomy_issues is non-null.',
+        'Set style_ok false for photorealism, realistic handsome faces, naturalistic',
+        'human proportions, pores, stubble, realistic hair strands, realistic eyes or lips,',
+        'insufficient facial exaggeration, 3D plastic rendering, corporate vector art,',
+        'pastel children-book styling, cheerful clean lighting, weak silhouettes, missing',
+        'graphic-novel editorial styling, or missing painterly texture. Set verdict to "regenerate" if style_ok, palette_ok or',
+        'framing_ok is false, if visible_text is true, or if anatomy_issues is non-null.',
         '',
         SCHEMA_HINT,
     ]
@@ -78,48 +81,9 @@ function rubric(shotDescription: string, paletteOverride?: string): string {
         .join('\n');
 }
 
-interface ChatResponse {
-    choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
-}
-
-async function chat(content: unknown[], maxTokens: number): Promise<string> {
-    const cfg = getConfig();
-    const res = await fetch(`${cfg.xaiBaseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${cfg.xaiApiKey}`,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            model: cfg.visionModel,
-            messages: [{ role: 'user', content }],
-            max_tokens: maxTokens,
-            temperature: 0,
-        }),
-        signal: AbortSignal.timeout(120_000),
-    });
-
-    if (!res.ok) {
-        throw new Error(
-            `vision ${res.status}: ${redact(await res.text().catch(() => '')).slice(0, 200)}`,
-        );
-    }
-    const body = (await res.json()) as ChatResponse;
-    return body.choices?.[0]?.message?.content?.trim() ?? '';
-}
-
-/** Models sometimes wrap JSON in fences or prose despite instructions. */
-function parseJson<T>(raw: string): T | undefined {
-    const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-    const start = cleaned.indexOf('{');
-    const end = cleaned.lastIndexOf('}');
-    if (start === -1 || end <= start) return undefined;
-    try {
-        return JSON.parse(cleaned.slice(start, end + 1)) as T;
-    } catch {
-        return undefined;
-    }
+/** One user turn against the configured vision model. */
+function chat(content: unknown[], maxTokens: number): Promise<string> {
+    return chatText(content, { model: getConfig().visionModel, maxTokens });
 }
 
 function coerce(raw: Record<string, unknown>): Critique {
@@ -149,7 +113,6 @@ function coerce(raw: Record<string, unknown>): Critique {
         !critique.palette_ok ||
         !critique.framing_ok ||
         critique.visible_text ||
-        critique.faces_to_camera ||
         critique.anatomy_issues
     ) {
         critique.verdict = 'regenerate';
@@ -193,8 +156,8 @@ export interface DriftReport {
  * Compare a clip's first and last frame in a single call.
  *
  * This is the drift check as text. The characteristic failure is starting in
- * the correct flat style and progressively turning photorealistic, or animating
- * something that was meant to stay still.
+ * the correct editorial cartoon style and progressively turning photorealistic,
+ * or animating something that was meant to stay still.
  */
 export async function critiqueDrift(
     firstFrameUrl: string,
@@ -213,11 +176,12 @@ export async function critiqueDrift(
                         `The intended shot was: ${shotDescription}`,
                         `The required style throughout is: ${STYLE_BLOCK}`,
                         '',
-                        'Compare them. Report style drift (flat 2D becoming photorealistic,',
-                        'gradients or texture appearing, outlines thinning or vanishing,',
-                        'palette warming or saturating), and any object or body part that',
+                        'Compare them. Report style drift (editorial cartoon becoming photorealistic,',
+                        'realistic-faced, 3D-rendered, corporate-vector, overly pastel, too cleanly lit, losing',
+                        'graphic-novel editorial styling, or losing the dark green, burnt orange, red and black palette),',
+                        'and any object or body part that',
                         'changed shape when it should have stayed still — a hand closing, a',
-                        'face turning toward camera, geometry morphing.',
+                        'face changing identity, geometry morphing.',
                         '',
                         'Reply with ONLY a JSON object, no prose and no code fences:',
                         '{ "drift": <boolean>, "summary": "<one or two sentences>",',

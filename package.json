@@ -1,7 +1,7 @@
 {
   "name": "shorts-mcp-server",
   "version": "1.0.0",
-  "description": "Headless remote MCP server wrapping the xAI Imagine API for stylized 2D animated vertical shorts",
+  "description": "Headless remote MCP server wrapping the xAI Imagine API for dark editorial-cartoon animated vertical shorts",
   "type": "module",
   "private": true,
   "license": "ISC",
@@ -9,11 +9,13 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "npm run build:widgets && tsx watch src/index.ts",
+    "dev": "npm run build:bundles && tsx watch src/index.ts",
     "build:widgets": "node widgets/build.mjs",
-    "build": "npm run build:widgets && tsc -p tsconfig.json",
+    "build:ui": "node ui/build.mjs",
+    "build:bundles": "npm run build:widgets && npm run build:ui",
+    "build": "npm run build:bundles && tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "typecheck": "npm run build:widgets && tsc -p tsconfig.check.json",
+    "typecheck": "npm run build:bundles && tsc -p tsconfig.check.json && tsc -p ui/tsconfig.json",
     "smoke": "tsx scripts/smoke.ts"
   },
   "dependencies": {

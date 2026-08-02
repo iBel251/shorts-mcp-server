@@ -3,10 +3,12 @@ import express, { type Request, type Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { apiRoutes } from './api.js';
 import { registerApps } from './apps.js';
 import { requirePathSecret, requireSharedSecret } from './auth.js';
 import { errorMessage, log } from './logger.js';
 import { registerTools } from './tools.js';
+import { STUDIO_HTML } from './ui.generated.js';
 
 /**
  * Streamable HTTP transport, served at the root path.
@@ -24,7 +26,7 @@ function buildMcpServer(): McpServer {
         { name: 'shorts-pipeline', version: '1.0.0' },
         {
             instructions:
-                'Generates stylized flat 2D animated vertical shorts via the xAI Imagine API.\n\n' +
+                'Generates stylized dark editorial-cartoon animated vertical shorts via the xAI Imagine API.\n\n' +
                 'Pipeline: generate_still → approve_still → animate → check_job. ' +
                 'For externally generated images, use import_image → approve_still → ' +
                 'animate → check_job. ' +
@@ -33,9 +35,11 @@ function buildMcpServer(): McpServer {
                 'For story projects, save_story_manifest and import_reference_image first, ' +
                 'then use get_story_manifest to retrieve reference asset ids for scenes. ' +
                 'Use list_shots to resume a project cold.\n\n' +
-                'The visual style is locked server-side and is applied to every prompt ' +
-                'automatically — never describe style, outlines, shading, or realism in a ' +
-                'shot_description or motion_instruction. Use palette_override only for ' +
+                'The base visual style is locked server-side and is applied to every prompt ' +
+                'automatically. Keep shot_description focused on subject, action and setting. ' +
+                'Keep motion_instruction focused on one camera move, one restrained subject ' +
+                'action, subtle background motion, preserving the original composition and ' +
+                'character design, and preventing morphing. Use palette_override only for ' +
                 'per-beat colour shifts.\n\n' +
                 'For multi-scene shorts, submit every approved scene image to animate first ' +
                 'so each clip gets its own player card, then poll check_job for completion. ' +
@@ -68,7 +72,6 @@ function mcpRoutes(): express.Router {
 export function createApp(): express.Express {
     const app = express();
     app.disable('x-powered-by');
-    app.use(express.json({ limit: '4mb' }));
 
     // Unauthenticated liveness probe for the host's health checks. Registered
     // before the gated mounts so it stays reachable.
@@ -95,6 +98,23 @@ export function createApp(): express.Express {
         next();
     });
 
+    // The studio shell. Deliberately ungated: it is a static document with no
+    // project data in it, and it cannot read any until the person using it
+    // supplies the shared secret, which it then sends as x-api-key on every
+    // /api call. Putting auth in front of the HTML instead would mean a browser
+    // basic-auth prompt or a secret in the URL bar, and neither is better than
+    // a page that asks once and holds the key client-side.
+    app.get(['/studio', '/studio/'], (_req: Request, res: Response) => {
+        res.type('html').send(STUDIO_HTML);
+    });
+
+    // The studio's data plane, gated by the same shared secret as MCP.
+    //
+    // Its own body parser, with a much larger limit: reference plates and
+    // imported stills arrive as base64, and 20MB of image is ~27MB of JSON.
+    // Scoping it here keeps the MCP endpoint's 4MB ceiling intact.
+    app.use('/api', requireSharedSecret, express.json({ limit: '32mb' }), apiRoutes());
+
     // Two ways in, same endpoint, both gated:
     //
     //   /<secret>  — credential in the URL, for claude.ai connectors, which
@@ -104,8 +124,12 @@ export function createApp(): express.Express {
     //
     // Auth is middleware either way, so tool logic never sees an
     // unauthenticated request and swapping in OAuth touches only auth.ts.
-    app.use('/:token', requirePathSecret, mcpRoutes());
-    app.use('/', requireSharedSecret, mcpRoutes());
+    //
+    // These are last because `/:token` matches any single path segment and
+    // would otherwise swallow /studio and /api.
+    const mcpJson = express.json({ limit: '4mb' });
+    app.use('/:token', requirePathSecret, mcpJson, mcpRoutes());
+    app.use('/', requireSharedSecret, mcpJson, mcpRoutes());
 
     return app;
 }

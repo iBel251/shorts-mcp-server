@@ -38,6 +38,8 @@ export interface AssetRow {
     public_url: string;
     approved: boolean;
     upstream_job: string | null;
+    /** Stored vision critique, when one was run. Shape is vision.ts's Critique. */
+    critique: Record<string, unknown> | null;
     created_at: string;
 }
 
@@ -168,6 +170,19 @@ export async function listProjects(): Promise<ProjectRow[]> {
     return (res.data ?? []) as ProjectRow[];
 }
 
+export async function renameProject(projectId: string, name: string): Promise<ProjectRow> {
+    return unwrap(
+        await db().from('projects').update({ name }).eq('id', projectId).select().single(),
+        'Rename project',
+    ) as ProjectRow;
+}
+
+/** Cascades to shots, assets and jobs. Storage objects are left for cleanup-orphans. */
+export async function deleteProject(projectId: string): Promise<void> {
+    const res = await db().from('projects').delete().eq('id', projectId);
+    if (res.error) throw new Error(`Delete project: ${res.error.message}`);
+}
+
 // ------------------------------------------------------------------ shots
 
 /** Next free shot number in a project, 1-based. */
@@ -224,6 +239,19 @@ export async function listShots(projectId: string): Promise<ShotRow[]> {
     return (res.data ?? []) as ShotRow[];
 }
 
+export async function updateShotDescription(shotId: string, description: string): Promise<ShotRow> {
+    return unwrap(
+        await db().from('shots').update({ description }).eq('id', shotId).select().single(),
+        'Update shot description',
+    ) as ShotRow;
+}
+
+/** Cascades to the shot's assets and jobs. */
+export async function deleteShot(shotId: string): Promise<void> {
+    const res = await db().from('shots').delete().eq('id', shotId);
+    if (res.error) throw new Error(`Delete shot: ${res.error.message}`);
+}
+
 // ----------------------------------------------------------------- assets
 
 export async function createAsset(input: {
@@ -273,6 +301,20 @@ export async function listAssetsByIds(assetIds: string[]): Promise<AssetRow[]> {
     const res = await db().from('assets').select('*').in('id', assetIds);
     if (res.error) throw new Error(`List assets by id: ${res.error.message}`);
     return (res.data ?? []) as AssetRow[];
+}
+
+/**
+ * Attach a vision critique to a still.
+ *
+ * Best-effort by design: a critique is a nice-to-have annotation, and a write
+ * failure here must never lose the generation it describes.
+ */
+export async function setAssetCritique(
+    assetId: string,
+    critique: Record<string, unknown>,
+): Promise<void> {
+    const res = await db().from('assets').update({ critique }).eq('id', assetId);
+    if (res.error) throw new Error(`Store critique: ${res.error.message}`);
 }
 
 /** Approve one still and un-approve every sibling of the same shot. */
@@ -343,6 +385,24 @@ export async function listOpenJobs(): Promise<JobRow[]> {
         .in('status', ['submitted', 'processing'])
         .order('created_at', { ascending: true });
     if (res.error) throw new Error(`List open jobs: ${res.error.message}`);
+    return (res.data ?? []) as JobRow[];
+}
+
+/**
+ * Every job for a set of shots, newest first.
+ *
+ * `latestJobsForShots` collapses to one row per shot, which is what the tool
+ * surface wants. The Jobs tab in the web UI wants the opposite — the full
+ * history, including the failed attempt that a later retry superseded.
+ */
+export async function listJobsForShots(shotIds: string[]): Promise<JobRow[]> {
+    if (shotIds.length === 0) return [];
+    const res = await db()
+        .from('jobs')
+        .select('*')
+        .in('shot_id', shotIds)
+        .order('created_at', { ascending: false });
+    if (res.error) throw new Error(`List jobs for shots: ${res.error.message}`);
     return (res.data ?? []) as JobRow[];
 }
 
@@ -442,4 +502,14 @@ export async function listReferenceAssets(input: {
     const res = await query;
     if (res.error) throw new Error(`List reference assets: ${res.error.message}`);
     return (res.data ?? []) as ReferenceAssetRow[];
+}
+
+/**
+ * Untag a reference. The underlying still asset is deliberately left alone —
+ * it may be the approved plate of a real shot, and losing that to a tidy-up of
+ * the reference index would be unrecoverable.
+ */
+export async function deleteReferenceAsset(referenceId: string): Promise<void> {
+    const res = await db().from('reference_assets').delete().eq('id', referenceId);
+    if (res.error) throw new Error(`Delete reference asset: ${res.error.message}`);
 }

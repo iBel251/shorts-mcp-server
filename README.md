@@ -1,9 +1,10 @@
 # Shorts Pipeline MCP Server
 
-A headless remote MCP server that wraps the xAI Imagine API so Claude (web and
-mobile) can generate stylized 2D animated vertical shorts through tool calls.
+A remote MCP server that wraps the xAI Imagine API so Claude (web and mobile)
+can generate dark editorial-cartoon animated vertical shorts through tool calls.
 
-There is no frontend. The only human interface is a Claude chat window.
+It ships with a second control surface: **Shorts Studio**, a web UI at `/studio`
+that drives the same pipeline directly — see [Web studio](#web-studio).
 
 ---
 
@@ -12,8 +13,14 @@ There is no frontend. The only human interface is a Claude chat window.
 ### 1. Supabase
 
 Create a project, then run [supabase/schema.sql](supabase/schema.sql) in the SQL
-editor. It creates `projects`, `shots`, `assets`, and `jobs`, and is safe to
-re-run.
+editor. It creates `projects`, `shots`, `assets`, `jobs`, `story_manifests` and
+`reference_assets`, and is safe to re-run.
+
+> **Upgrading an existing database:** re-run the same file. It now adds a
+> `critique` column to `assets` (`add column if not exists`), which is where the
+> vision pass's verdict is stored so the studio can show why a variation was
+> rejected. Everything keeps working without it — the critique panel just stays
+> empty.
 
 The storage bucket (`shorts`, public) is created automatically on first boot —
 no manual step needed.
@@ -126,6 +133,65 @@ defaults to `x-api-key`.
 
 Add it on the web first. iOS and Android can *use* remote MCP servers but cannot
 add new ones.
+
+---
+
+## Web studio
+
+Open **`https://<host>/studio`** in a browser. It asks once for
+`SHORTS_SHARED_SECRET`, keeps it in `localStorage`, and sends it as `x-api-key`
+on every request — the same credential path Claude Code uses.
+
+It is the same pipeline, not a viewer. Everything it does goes through
+[`src/pipeline.ts`](src/pipeline.ts), which is also what the MCP tools call, so
+a short started in Claude can be finished in the browser and vice versa.
+
+| Screen | What it does |
+|---|---|
+| Projects | Every project as a card: filmstrip of approved plates, logline, progress. |
+| Shots | Each beat with its variations. Click a variation to `approve_still`; Animate, Regenerate, Delete per shot. |
+| Story | The saved story text and shot beats. Edit and re-save the manifest. |
+| References | The reference index. Upload a plate, import one by URL, or have Grok generate one. |
+| Jobs | Live job table with elapsed time, upstream errors, Retry and Cancel. |
+| Rough cut | Plays the finished clips back to back, in shot order. |
+| New short | The five-step wizard: pitch → story → beats → references → run. |
+
+The wizard's first four steps call Grok (`/api/assist` → `chat/completions`) to
+pitch hooks, draft the ~40-second story, break it into 5-second chunks, and work
+out the minimum reference plates. Step 5 turns the plan into real rows: it
+creates the project, saves the manifest, generates the plates, then generates
+stills shot by shot with a visible log. Video is deliberately **not** submitted —
+you approve plates first, then press *Animate approved*.
+
+### Things worth knowing
+
+- **The studio spends money.** Generating stills and submitting video are real
+  xAI calls. The shared secret in front of `/api` is protecting a wallet, not
+  just data. `/studio` itself is unauthenticated because it is a static document
+  with nothing in it.
+- **Cancel is local.** xAI exposes no cancel endpoint, so cancelling stops the
+  worker polling and frees the shot; the upstream generation still completes and
+  is still billed.
+- **Rough cut is not a render.** It plays the separate clips in sequence. There
+  is no concatenated file on the server, and nothing pretends there is.
+- **Reference plates create shots.** Reference assets hang off a shot row, so
+  importing one makes a shot. The studio marks these and keeps them out of the
+  Shots tab and the shot counts.
+
+### Rebuilding the front end
+
+The studio is bundled to a single self-contained document and committed as
+`src/ui.generated.ts`, for the same reason the widgets are: the Dockerfile runs
+`tsc` only, and esbuild's platform binary is not reliably present under
+`npm ci --ignore-scripts`.
+
+```bash
+npm run build:ui        # ui/*.ts -> src/ui.generated.ts
+npm run typecheck       # server + browser sources
+```
+
+Commit `src/ui.generated.ts` with any change under `ui/`, or the deployed studio
+will be stale.
 
 ---
 
@@ -326,11 +392,11 @@ structured judgement as text:
 "critiques": [{
   "variation": 3, "asset_id": "e89658f3",
   "verdict": "regenerate",
-  "reason": "Sky and water use soft gradient bands rather than flat colour fills.",
+  "reason": "Character faces are too realistic and handsome instead of exaggerated editorial-cartoon caricatures.",
   "style_ok": false, "palette_ok": true, "framing_ok": true,
   "people": 1, "visible_text": false, "faces_to_camera": false,
   "anatomy_issues": null,
-  "fix_suggestion": "Replace sky/water gradients with solid flat muted fills..."
+  "fix_suggestion": "Push oversized expressive eyes, exaggerated nose and brows, angular cheeks, simplified skin planes, painterly texture, and the dark green, burnt orange, red and black palette..."
 }]
 ```
 
@@ -346,7 +412,7 @@ because a self-contradictory "accept" is exactly what this exists to prevent.
 **This is a floor, not a replacement for seeing.** It is a description, and a
 model relying on it is judging a description — it should say so. Measured
 against four real stills it was discriminating (2 accept, 2 regenerate, catching
-genuine gradient violations) but not identical to a direct look. Images are
+style and palette violations) but not identical to a direct look. Images are
 still returned alongside; this only carries the load when they don't arrive.
 
 Costs ~$0.006 and ~4–5s per image. `ENABLE_VISION_CRITIQUE=false`, or
@@ -384,8 +450,8 @@ is never discarded over a transient error.
 ### Model choice
 
 `grok-imagine-video`, not `grok-imagine-video-1.5`. The older model holds the
-flat 2D style far better; 1.5 pulls toward photorealism, adds gradients and skin
-texture, and costs twice as much. Default resolution is 720p (1080p does not
+stylized editorial-cartoon look far better; 1.5 pulls toward photorealism and
+costs twice as much. Default resolution is 720p (1080p does not
 exist on the old model; upscaling happens in post).
 
 Both are set via `VIDEO_MODEL` / `VIDEO_RESOLUTION` env vars, so swapping models
@@ -410,6 +476,12 @@ an allowlist that excludes bespoke ones. Hence the URL-path route.
 Both checks are Express middleware in [src/auth.ts](src/auth.ts), so swapping in
 OAuth later touches no tool logic.
 
+The studio's `/api` mount reuses the header check unchanged. `/studio` itself is
+served without auth: it is a static document containing no project data, and it
+can read nothing until someone types the secret into it. The alternative — a
+secret in the URL — would put the credential in browser history, screenshots and
+whatever the browser syncs.
+
 ### Secrets
 
 The xAI key is injected in [src/xai.ts](src/xai.ts) and nowhere else. Rather than
@@ -430,6 +502,11 @@ deprecated.
 - `GET /` — server→client notification stream
 - `DELETE /` — ends a session
 - Unknown session id → `404`, telling the client to re-initialize
+
+`/healthz`, `/studio` and `/api/*` are mounted **before** the MCP routes, because
+`/:token` matches any single path segment and would otherwise swallow them. The
+MCP mounts keep a 4 MB JSON limit; `/api` gets its own 32 MB parser, since a
+20 MB reference plate is ~27 MB of base64.
 
 ---
 

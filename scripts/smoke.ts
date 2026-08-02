@@ -120,6 +120,54 @@ try {
         pass('GET /healthz is unauthenticated');
     }
 
+    // --- the studio: mount ordering is the fragile part ----------------------
+    //
+    // `/:token` matches any single path segment, so /studio and /api only work
+    // because they are registered before it. Get that wrong and the studio
+    // silently becomes a 401 from the MCP auth middleware.
+    {
+        const res = await fetch(`${base}studio`);
+        const body = await res.text();
+        assert.equal(res.status, 200, `expected the studio to be served, got ${res.status}`);
+        assert.match(res.headers.get('content-type') ?? '', /text\/html/);
+        assert.match(body, /<title>Shorts Studio<\/title>/);
+        // The page must carry no data and no credential — it is served to
+        // anyone who asks for it.
+        assert.ok(!body.includes(SECRET), 'the studio document must not embed the shared secret');
+        pass('GET /studio serves the studio shell, unauthenticated and dataless');
+    }
+    {
+        const res = await fetch(`${base}api/config`);
+        assert.equal(res.status, 401, `expected /api to be gated, got ${res.status}`);
+        pass('/api is gated by the same shared secret');
+    }
+    {
+        const res = await fetch(`${base}api/config`, { headers: { 'X-Api-Key': SECRET } });
+        assert.equal(res.status, 200, `expected /api/config to answer, got ${res.status}`);
+        const body = (await res.json()) as Record<string, unknown>;
+        for (const key of ['video_model', 'image_model', 'vision_model', 'defaults']) {
+            assert.ok(key in body, `/api/config is missing ${key}`);
+        }
+        // The config route describes the deployment; it must never hand back
+        // anything that could be used to call xAI directly.
+        assert.ok(
+            !JSON.stringify(body).includes(process.env.XAI_API_KEY!),
+            '/api/config leaked the xAI key',
+        );
+        pass('/api/config reports the running models without leaking credentials');
+    }
+    {
+        const res = await fetch(`${base}api/assist`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Api-Key': SECRET },
+            body: JSON.stringify({ mode: 'not-a-mode' }),
+        });
+        assert.equal(res.status, 400, `expected a 400 for a bad assist mode, got ${res.status}`);
+        const body = (await res.json()) as { error?: string };
+        assert.match(String(body.error), /Unknown assist mode/);
+        pass('/api returns structured JSON errors, not stack traces');
+    }
+
     // --- a stale session id is rejected, not silently accepted ---------------
     {
         const res = await fetch(base, {

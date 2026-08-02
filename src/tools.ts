@@ -5,11 +5,12 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { GALLERY_URI, PLAYER_URI, uiMeta } from './apps.js';
-import { critiqueDrift, critiqueStill } from './vision.js';
+import { critiqueDrift } from './vision.js';
 import { makeContactSheet, makePreview } from './frames.js';
 import { downloadWithRetry } from './storage.js';
+import { animateStill, approveStill, generateStills } from './pipeline.js';
+import { importStillAsset, loadImportedImage } from './import.js';
 import {
-    buildPrompt,
     getConfig,
     DEFAULT_DURATION,
     DEFAULT_STILL_COUNT,
@@ -19,10 +20,8 @@ import {
     MIN_DURATION,
 } from './config.js';
 import {
-    approveStillExclusively,
     createReferenceAsset,
     createAsset,
-    createJob,
     createShot,
     getAsset,
     getJob,
@@ -45,9 +44,8 @@ import {
     type ReferenceAssetRow,
 } from './db.js';
 import { errorMessage, log } from './logger.js';
-import { assetPath, persistFromUrl, putBuffer } from './storage.js';
+import { assetPath, putBuffer } from './storage.js';
 import { advanceJobById } from './worker.js';
-import { editImage, generateImage, submitVideo } from './xai.js';
 
 /**
  * The core generation surface is deliberately small.
@@ -185,259 +183,6 @@ function guard<T extends unknown[]>(
     };
 }
 
-function extOf(url: string, fallback: string): string {
-    const match = /\.([a-z0-9]{3,4})(?:\?|#|$)/i.exec(url);
-    return match?.[1]?.toLowerCase() ?? fallback;
-}
-
-function isPrivateIp(address: string): boolean {
-    const version = isIP(address);
-    if (version === 4) {
-        const parts = address.split('.').map(Number);
-        const [a, b] = parts;
-        return (
-            a === 10 ||
-            a === 127 ||
-            (a === 169 && b === 254) ||
-            (a === 172 && b !== undefined && b >= 16 && b <= 31) ||
-            (a === 192 && b === 168) ||
-            address === '0.0.0.0'
-        );
-    }
-    if (version === 6) {
-        const lower = address.toLowerCase();
-        return (
-            lower === '::1' ||
-            lower === '::' ||
-            lower.startsWith('fc') ||
-            lower.startsWith('fd') ||
-            lower.startsWith('fe80:') ||
-            lower.startsWith('::ffff:10.') ||
-            lower.startsWith('::ffff:127.') ||
-            lower.startsWith('::ffff:192.168.')
-        );
-    }
-    return false;
-}
-
-async function assertPublicImageUrl(url: URL): Promise<void> {
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-        throw new Error('image_url must be http or https');
-    }
-    if (url.username || url.password) {
-        throw new Error('image_url must not include credentials');
-    }
-
-    const host = url.hostname.toLowerCase();
-    if (
-        host === 'localhost' ||
-        host.endsWith('.localhost') ||
-        host === 'metadata.google.internal'
-    ) {
-        throw new Error('image_url must be publicly reachable, not localhost or metadata');
-    }
-    if (isIP(host) && isPrivateIp(host)) {
-        throw new Error('image_url must not point at a private or loopback address');
-    }
-
-    // Hostnames can resolve to private addresses even when they look public.
-    const addresses = await lookup(host, { all: true }).catch((err) => {
-        throw new Error(`Could not resolve image_url host: ${errorMessage(err)}`);
-    });
-    if (addresses.some((a) => isPrivateIp(a.address))) {
-        throw new Error('image_url resolved to a private or loopback address');
-    }
-}
-
-async function downloadImportUrl(source: string): Promise<{
-    bytes: Uint8Array;
-    contentType?: string;
-    finalUrl: string;
-}> {
-    let url = new URL(source);
-    for (let redirect = 0; redirect <= 5; redirect++) {
-        await assertPublicImageUrl(url);
-        const res = await fetch(url, {
-            redirect: 'manual',
-            signal: AbortSignal.timeout(120_000),
-        });
-
-        if (res.status >= 300 && res.status < 400) {
-            const location = res.headers.get('location');
-            if (!location) throw new Error(`image_url redirected with no Location header`);
-            url = new URL(location, url);
-            continue;
-        }
-        if (!res.ok) {
-            throw new Error(`Download image_url failed with HTTP ${res.status} ${res.statusText}`);
-        }
-
-        const length = Number(res.headers.get('content-length'));
-        if (Number.isFinite(length) && length > IMPORT_MAX_BYTES) {
-            throw new Error(`Imported image is larger than ${IMPORT_MAX_BYTES} bytes`);
-        }
-
-        const body = new Uint8Array(await res.arrayBuffer());
-        if (body.byteLength > IMPORT_MAX_BYTES) {
-            throw new Error(`Imported image is larger than ${IMPORT_MAX_BYTES} bytes`);
-        }
-        return {
-            bytes: body,
-            contentType: res.headers.get('content-type')?.split(';')[0]?.toLowerCase(),
-            finalUrl: url.toString(),
-        };
-    }
-    throw new Error('image_url redirected too many times');
-}
-
-function parseBase64Image(raw: string): { bytes: Uint8Array; contentType?: string } {
-    const trimmed = raw.trim();
-    const match = /^data:([^;,]+);base64,(.*)$/is.exec(trimmed);
-    const contentType = match?.[1]?.toLowerCase();
-    const encoded = (match?.[2] ?? trimmed).replace(/\s/g, '');
-    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length === 0) {
-        throw new Error('image_base64 must contain valid base64 image data');
-    }
-    const bytes = new Uint8Array(Buffer.from(encoded, 'base64'));
-    if (bytes.byteLength > IMPORT_MAX_BYTES) {
-        throw new Error(`Imported image is larger than ${IMPORT_MAX_BYTES} bytes`);
-    }
-    return { bytes, contentType };
-}
-
-function jpegSize(bytes: Uint8Array): { width: number; height: number } | undefined {
-    if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return undefined;
-    let i = 2;
-    while (i + 9 < bytes.length) {
-        if (bytes[i] !== 0xff) {
-            i++;
-            continue;
-        }
-        const marker = bytes[i + 1]!;
-        const length = (bytes[i + 2]! << 8) | bytes[i + 3]!;
-        if (length < 2) return undefined;
-        if (
-            (marker >= 0xc0 && marker <= 0xc3) ||
-            (marker >= 0xc5 && marker <= 0xc7) ||
-            (marker >= 0xc9 && marker <= 0xcb) ||
-            (marker >= 0xcd && marker <= 0xcf)
-        ) {
-            return {
-                height: (bytes[i + 5]! << 8) | bytes[i + 6]!,
-                width: (bytes[i + 7]! << 8) | bytes[i + 8]!,
-            };
-        }
-        i += 2 + length;
-    }
-    return undefined;
-}
-
-function u24le(bytes: Uint8Array, offset: number): number {
-    return bytes[offset]! | (bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16);
-}
-
-function inspectImage(bytes: Uint8Array, declared?: string): {
-    mimeType: string;
-    ext: 'png' | 'jpg' | 'webp';
-    width?: number;
-    height?: number;
-} {
-    if (bytes.byteLength < 12) throw new Error('Imported image is empty or truncated');
-
-    if (
-        bytes[0] === 0x89 &&
-        bytes[1] === 0x50 &&
-        bytes[2] === 0x4e &&
-        bytes[3] === 0x47 &&
-        bytes[12] === 0x49 &&
-        bytes[13] === 0x48 &&
-        bytes[14] === 0x44 &&
-        bytes[15] === 0x52
-    ) {
-        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        return {
-            mimeType: 'image/png',
-            ext: 'png',
-            width: view.getUint32(16),
-            height: view.getUint32(20),
-        };
-    }
-
-    const jpg = jpegSize(bytes);
-    if (jpg) return { mimeType: 'image/jpeg', ext: 'jpg', ...jpg };
-
-    const riff = String.fromCharCode(...bytes.slice(0, 4));
-    const webp = String.fromCharCode(...bytes.slice(8, 12));
-    if (riff === 'RIFF' && webp === 'WEBP') {
-        const chunk = String.fromCharCode(...bytes.slice(12, 16));
-        if (chunk === 'VP8X' && bytes.length >= 30) {
-            return {
-                mimeType: 'image/webp',
-                ext: 'webp',
-                width: u24le(bytes, 24) + 1,
-                height: u24le(bytes, 27) + 1,
-            };
-        }
-        return { mimeType: 'image/webp', ext: 'webp' };
-    }
-
-    throw new Error(
-        `Imported image must be PNG, JPEG or WebP${
-            declared ? `; received ${declared}` : ''
-        }`,
-    );
-}
-
-type ImportArgs = {
-    image_url?: string | undefined;
-    image_base64?: string | undefined;
-    image_file?: { data: string; mime_type?: string | undefined; filename?: string | undefined };
-};
-
-async function loadImportedImage(args: ImportArgs): Promise<{
-    bytes: Uint8Array;
-    contentType?: string;
-    source?: string;
-    image: ReturnType<typeof inspectImage>;
-}> {
-    const sourceCount = [
-        Boolean(args.image_url),
-        Boolean(args.image_base64),
-        Boolean(args.image_file?.data),
-    ].filter(Boolean).length;
-    if (sourceCount !== 1) {
-        throw new Error('Provide exactly one of image_url, image_base64, or image_file.data.');
-    }
-
-    let imported: { bytes: Uint8Array; contentType?: string; source?: string };
-    if (args.image_url) {
-        const downloaded = await downloadImportUrl(args.image_url);
-        imported = {
-            bytes: downloaded.bytes,
-            contentType: downloaded.contentType,
-            source: downloaded.finalUrl,
-        };
-    } else if (args.image_file?.data) {
-        const parsed = parseBase64Image(args.image_file.data);
-        imported = {
-            bytes: parsed.bytes,
-            contentType: args.image_file.mime_type?.toLowerCase() ?? parsed.contentType,
-            source: args.image_file.filename,
-        };
-    } else {
-        const parsed = parseBase64Image(args.image_base64!);
-        imported = {
-            bytes: parsed.bytes,
-            contentType: parsed.contentType,
-        };
-    }
-
-    return {
-        ...imported,
-        image: inspectImage(imported.bytes, imported.contentType),
-    };
-}
-
 async function resolveProjectId(args: {
     project_id?: string | undefined;
     project_name?: string | undefined;
@@ -449,60 +194,6 @@ async function resolveProjectId(args: {
     }
     if (args.project_name) return (await getOrCreateProjectByName(args.project_name)).id;
     return (await getOrCreateDefaultProject()).id;
-}
-
-async function importStillAsset(input: {
-    projectId: string;
-    shotId?: string | undefined;
-    shotNumber?: number | undefined;
-    description: string;
-    imported: Awaited<ReturnType<typeof loadImportedImage>>;
-}): Promise<{
-    asset: AssetRow;
-    shotId: string;
-    shotNumber: number;
-    publicUrl: string;
-    width?: number;
-    height?: number;
-    mimeType: string;
-    source?: string;
-}> {
-    const shot = input.shotId
-        ? await getShot(input.shotId)
-        : await createShot({
-              projectId: input.projectId,
-              shotNumber: input.shotNumber ?? (await nextShotNumber(input.projectId)),
-              description: input.description,
-          });
-    if (!shot) throw new Error(`No shot with id ${input.shotId}`);
-    if (shot.project_id !== input.projectId) {
-        throw new Error(`Shot ${shot.id} does not belong to project ${input.projectId}`);
-    }
-
-    const id = randomUUID();
-    const stored = await putBuffer(
-        assetPath(shot.id, 'still', id, input.imported.image.ext),
-        input.imported.bytes,
-        input.imported.image.mimeType,
-    );
-    const asset = await createAsset({
-        shotId: shot.id,
-        kind: 'still',
-        storagePath: stored.storagePath,
-        publicUrl: stored.publicUrl,
-    });
-    await setShotStatus(shot.id, 'still_ready');
-
-    return {
-        asset,
-        shotId: shot.id,
-        shotNumber: shot.shot_number,
-        publicUrl: asset.public_url,
-        width: input.imported.image.width,
-        height: input.imported.image.height,
-        mimeType: input.imported.image.mimeType,
-        source: input.imported.source,
-    };
 }
 
 async function referenceRowsWithUrls(refs: ReferenceAssetRow[]): Promise<Array<Record<string, unknown>>> {
@@ -532,7 +223,7 @@ export function registerTools(server: McpServer): void {
         {
             title: 'Generate still variations',
             description:
-                'Generate still-image variations for a shot in the locked flat 2D style. ' +
+                'Generate still-image variations for a shot in the locked dark editorial cartoon style. ' +
                 'The style is applied server-side and cannot be overridden — use ' +
                 'palette_override only for per-beat colour shifts. All variations are ' +
                 'persisted to permanent storage before this returns and come back as ' +
@@ -621,90 +312,31 @@ export function registerTools(server: McpServer): void {
                 projectId = (await getOrCreateDefaultProject()).id;
             }
 
-            // Resolve references before creating the shot, so a bad id fails
-            // cleanly instead of leaving an empty shot behind.
-            const referenceIds = args.reference_asset_ids ?? [];
-            const referenceUrls: string[] = [];
-            for (const id of referenceIds) {
-                const asset = await getAsset(id);
-                if (!asset) return fail(`No asset with id ${id} to use as a reference`);
-                if (asset.kind === 'video') {
-                    return fail(
-                        `Asset ${id} is a video and cannot be a reference. Use its ` +
-                            'first_frame or last_frame asset instead.',
-                    );
-                }
-                // Our own storage URL — never an expiring upstream one.
-                referenceUrls.push(asset.public_url);
-            }
-
-            const shotNumber = args.shot_number ?? (await nextShotNumber(projectId));
-            const shot = await createShot({
+            // The generation itself lives in pipeline.ts so the studio UI runs
+            // exactly this, not a second copy of it. What stays here is the
+            // MCP-specific presentation below.
+            const run = await generateStills({
                 projectId,
-                shotNumber,
+                shotNumber: args.shot_number,
                 description: args.shot_description,
-            });
-
-            const prompt = buildPrompt({
-                shotDescription: args.shot_description,
+                count,
                 paletteOverride: args.palette_override,
-                hasReferences: referenceUrls.length > 0,
+                referenceAssetIds: args.reference_asset_ids,
+                critique: args.critique,
             });
-
-            // Generate in parallel, but tolerate partial failure — some stills
-            // beat none, and the caller is told how many landed.
-            const results = await Promise.allSettled(
-                Array.from({ length: count }, async () => {
-                    const upstreamUrl =
-                        referenceUrls.length > 0
-                            ? await editImage(prompt, referenceUrls)
-                            : await generateImage(prompt);
-                    const id = randomUUID();
-                    const stored = await persistFromUrl(
-                        upstreamUrl,
-                        assetPath(shot.id, 'still', id, extOf(upstreamUrl, 'png')),
-                    );
-                    return createAsset({
-                        shotId: shot.id,
-                        kind: 'still',
-                        storagePath: stored.storagePath,
-                        publicUrl: stored.publicUrl,
-                    });
-                }),
-            );
-
-            const stills = results
-                .filter((r): r is PromiseFulfilledResult<AssetRow> => r.status === 'fulfilled')
-                .map((r) => ({ asset_id: r.value.id, url: r.value.public_url }));
-            const failures = results
-                .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
-                .map((r) => errorMessage(r.reason));
-
-            if (stills.length === 0) {
-                await setShotStatus(shot.id, 'failed');
-                return fail(`All ${count} image generations failed: ${failures[0] ?? 'unknown'}`);
-            }
-
-            await setShotStatus(shot.id, 'still_ready');
+            const { shot, failures } = run;
+            const stills = run.stills.map((s) => ({ asset_id: s.asset_id, url: s.url }));
 
             // Server-side vision pass. Text survives where image blocks do not,
             // so this is what keeps the model able to accept or reject when it
-            // cannot see the picture. Runs in parallel with itself, not before
-            // the images — a critique failure must never fail the tool.
-            let critiques: Array<Record<string, unknown>> | undefined;
-            if (getConfig().enableVisionCritique && args.critique !== false) {
-                critiques = await Promise.all(
-                    stills.map(async (still, index) => ({
-                        variation: index + 1,
-                        asset_id: still.asset_id,
-                        ...(await critiqueStill(
-                            still.url,
-                            args.shot_description,
-                            args.palette_override,
-                        )),
-                    })),
-                );
-            }
+            // cannot see the picture.
+            const critiques = run.stills.some((s) => s.critique)
+                ? run.stills.map((still, index) => ({
+                      variation: index + 1,
+                      asset_id: still.asset_id,
+                      ...still.critique,
+                  }))
+                : undefined;
 
             // Same reasoning as check_job: a variation the model cannot see is
             // a variation it cannot choose between.
@@ -745,7 +377,7 @@ export function registerTools(server: McpServer): void {
                     ...(critiques ? { critiques } : {}),
                     hint:
                         'The images below are the variations, in order. Judge them on style ' +
-                        'fidelity (flat 2D, even outlines, no photorealism) and composition, ' +
+                        'fidelity (dark editorial cartoon, exaggerated caricature faces, no photorealism) and composition, ' +
                         'then call approve_still with the chosen asset_id.' +
                         (critiques
                             ? ' If the images did not reach you, use `critiques` — a ' +
@@ -841,17 +473,6 @@ export function registerTools(server: McpServer): void {
             },
         },
         guard('import_image', async (args) => {
-            const sourceCount = [
-                Boolean(args.image_url),
-                Boolean(args.image_base64),
-                Boolean(args.image_file?.data),
-            ].filter(Boolean).length;
-            if (sourceCount !== 1) {
-                return fail(
-                    'Provide exactly one of image_url, image_base64, or image_file.data.',
-                );
-            }
-
             let projectId = args.project_id;
             if (projectId) {
                 const project = await getProject(projectId);
@@ -862,30 +483,12 @@ export function registerTools(server: McpServer): void {
                 projectId = (await getOrCreateDefaultProject()).id;
             }
 
-            let imported: { bytes: Uint8Array; contentType?: string; source?: string };
-            if (args.image_url) {
-                const downloaded = await downloadImportUrl(args.image_url);
-                imported = {
-                    bytes: downloaded.bytes,
-                    contentType: downloaded.contentType,
-                    source: downloaded.finalUrl,
-                };
-            } else if (args.image_file?.data) {
-                const parsed = parseBase64Image(args.image_file.data);
-                imported = {
-                    bytes: parsed.bytes,
-                    contentType: args.image_file.mime_type?.toLowerCase() ?? parsed.contentType,
-                    source: args.image_file.filename,
-                };
-            } else {
-                const parsed = parseBase64Image(args.image_base64!);
-                imported = {
-                    bytes: parsed.bytes,
-                    contentType: parsed.contentType,
-                };
-            }
-
-            const image = inspectImage(imported.bytes, imported.contentType);
+            // One loader for every import path — this tool, the reference
+            // import, and the studio's upload button. It enforces exactly one
+            // source, SSRF-checks the URL fetch, and sniffs the real format
+            // rather than trusting the declared one.
+            const imported = await loadImportedImage(args);
+            const image = imported.image;
             const shot = args.shot_id
                 ? await getShot(args.shot_id)
                 : await createShot({
@@ -1157,20 +760,7 @@ export function registerTools(server: McpServer): void {
             },
         },
         guard('approve_still', async (args) => {
-            const asset = await getAsset(args.asset_id);
-            if (!asset) return fail(`No asset with id ${args.asset_id}`);
-            if (asset.kind !== 'still') {
-                return fail(`Asset ${args.asset_id} is a ${asset.kind}, not a still`);
-            }
-
-            await approveStillExclusively(asset);
-            await setShotStatus(asset.shot_id, 'approved');
-
-            return ok({
-                asset_id: asset.id,
-                shot_id: asset.shot_id,
-                url: asset.public_url,
-            });
+            return ok(await approveStill(args.asset_id));
         }),
     );
 
@@ -1212,56 +802,17 @@ export function registerTools(server: McpServer): void {
             },
         },
         guard('animate', async (args) => {
-            const duration = args.duration ?? DEFAULT_DURATION;
-
-            const asset = await getAsset(args.asset_id);
-            if (!asset) return fail(`No asset with id ${args.asset_id}`);
-            if (asset.kind !== 'still') {
-                return fail(`Asset ${args.asset_id} is a ${asset.kind}, not a still`);
-            }
-            if (!asset.approved) {
-                return fail(
-                    `Still ${args.asset_id} is not approved. Call approve_still on it first.`,
-                );
-            }
-
-            const shot = await getShot(asset.shot_id);
-            if (!shot) return fail(`Shot ${asset.shot_id} no longer exists`);
-
-            const prompt = buildPrompt({
-                shotDescription: shot.description,
-                motionInstruction: args.motion_instruction,
-                paletteOverride: args.palette_override,
-            });
-
-            // We hand xAI our own storage URL, never an upstream one.
-            const requestId = await submitVideo({
-                prompt,
-                imageUrl: asset.public_url,
-                duration,
-            });
-
-            const job = await createJob({
-                shotId: shot.id,
-                sourceAssetId: asset.id,
-                upstreamJob: requestId,
-                motionInstruction: args.motion_instruction,
-                duration,
-            });
-            await setShotStatus(shot.id, 'animating');
-
-            log.info('animate submitted', { jobId: job.id, shotId: shot.id, duration });
-            // Model and resolution ride along so the widget can label the card
-            // while the job runs, the way a job card is expected to.
-            const cfg = getConfig();
-            return ok({
-                job_id: job.id,
-                status: 'submitted',
-                shot_id: shot.id,
-                duration,
-                model: cfg.videoModel,
-                resolution: cfg.videoResolution,
-            });
+            // Model and resolution ride along in the result so the widget can
+            // label the card while the job runs, the way a job card is expected
+            // to.
+            return ok(
+                await animateStill({
+                    assetId: args.asset_id,
+                    motionInstruction: args.motion_instruction,
+                    duration: args.duration ?? DEFAULT_DURATION,
+                    paletteOverride: args.palette_override,
+                }),
+            );
         }),
     );
 
