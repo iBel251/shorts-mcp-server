@@ -11,13 +11,21 @@ import 'dotenv/config';
  * can forget it, and there is deliberately no `style` tool parameter.
  */
 export const STYLE_BLOCK =
-    'Flat 2D animated illustration: thick black outlines of even weight, ' +
-    'flat colour fills with no gradients, no texture and no photographic ' +
-    'shading, muted desaturated palette.';
+    'Stylized 2D cinematic editorial illustration, graphic novel aesthetic, ' +
+    'dramatic noir lighting, exaggerated editorial cartoon caricature character ' +
+    'design, angular faces, oversized expressive eyes, exaggerated noses, brows, ' +
+    'jaws and ears, simplified non-realistic skin, painterly textures, strong ' +
+    'silhouettes, deep shadows, atmospheric smoke or haze, limited dark green, ' +
+    'burnt orange, red and black color palette, cinematic composition, ' +
+    'foreground-midground-background depth, moving illustrated graphic novel feel.';
 
 export const NEGATIVE_BLOCK =
-    'Nobody speaks or talks. No faces toward camera. No text, no captions, ' +
-    'no watermark, no extra characters, no fast motion.';
+    'Nobody speaks or talks. No text, no captions, no promotional banners, ' +
+    'no watermark, no logo, no unrelated extra characters, no fast motion, ' +
+    'no photorealism, no 3D plastic render, no corporate vector art, ' +
+    'no realistic handsome faces, no naturalistic human proportions, no pores, ' +
+    'no stubble, no realistic hair strands, no realistic eyes or lips, no morphing, ' +
+    'no scene transformation, no face morphing, no body distortion.';
 
 /**
  * Appended when reference images are supplied. Like the style block, this is
@@ -30,7 +38,7 @@ export const REFERENCE_BLOCK =
     'described action, framing and setting.';
 
 /** Bump when STYLE_BLOCK / NEGATIVE_BLOCK change, so old shots stay traceable. */
-export const STYLE_VERSION = 1;
+export const STYLE_VERSION = 4;
 
 /** Max reference images per request, per the upstream limit. */
 export const MAX_REFERENCE_IMAGES = 3;

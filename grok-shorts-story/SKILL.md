@@ -34,6 +34,99 @@ For this skill version, prefer ChatGPT image generation plus `import_reference_i
 
 Every generated image for this workflow must be portrait YouTube Shorts format: vertical 9:16, target 1080x1920. If an image is square, landscape, cropped badly, or not clearly 9:16 portrait, regenerate it before saving it to Grok MCP.
 
+## Image Style Prompt Guide
+
+Use this as the base prompt pattern for every ChatGPT-generated reference image and scene image:
+
+`[Subject and action], [location or environment], stylized 2D cinematic editorial illustration, graphic novel aesthetic, dramatic noir lighting, exaggerated editorial cartoon caricature character design, angular faces, oversized expressive eyes, exaggerated nose, brows, jaw and ears, simplified non-realistic skin, painterly textures, strong silhouettes, deep shadows, atmospheric smoke or haze, limited dark green, burnt orange, red and black color palette, cinematic composition, foreground-midground-background depth, vertical 9:16, no text, no watermark.`
+
+Example:
+
+`A scientist secretly working on a dangerous invention inside a cluttered laboratory, glowing machinery and scattered documents around him, stylized 2D cinematic editorial illustration, graphic novel aesthetic, dramatic noir lighting, exaggerated editorial cartoon caricature character design, angular face, oversized expressive eyes, exaggerated nose, brows, jaw and ears, simplified non-realistic skin, painterly textures, strong silhouettes, deep shadows, atmospheric haze, limited dark green, burnt orange, red and black color palette, cinematic composition, foreground-midground-background depth, vertical 9:16, no text, no watermark.`
+
+For visual consistency when a reference image exists, add:
+
+`Same character design, same face, same clothing, same hairstyle and same color palette as the reference image.`
+
+Characters must look like satirical editorial-cartoon caricatures, not realistic graphic-novel heroes. Push facial exaggeration and simplified shapes: big readable eyes, long or sharp noses, sharp eyebrows, angular cheeks, long faces, clear silhouette, simplified hands, and flat/painterly skin planes.
+
+Avoid realistic handsome faces, naturalistic human proportions, photographic skin, pores, stubble, realistic hair strands, realistic eyes, realistic lips, subtle model-like anatomy, 3D-rendered plastic surfaces, anime, soft children's-book pastels, bright cheerful lighting, minimal empty backgrounds, modern UI graphics, generic stock illustration, and clean corporate vector art.
+
+Do not bake captions, subtitles, promotional banners, watermarks, logos, or readable overlay text into generated images. The reference video contains text overlays, but this workflow should keep images clean so captions can be added later as a separate editing layer.
+
+## Camera And Motion Style Guide
+
+Animation should feel like a moving illustrated graphic novel, not full character animation.
+
+Use this general motion pattern:
+
+`Subtle cinematic image-to-video motion, slow controlled camera movement, layered parallax depth, restrained character movement, atmospheric smoke and light motion, preserve the original composition and character design, no morphing or scene transformation.`
+
+Choose only one main camera movement per shot:
+
+- Slow push-in for tension or importance
+- Slow pull-out for defeat, loneliness or revelation
+- Slow pan left or right for exploration
+- Low-angle push-in for power
+- High-angle pull-out for vulnerability
+- Gentle handheld drift for danger or uncertainty
+- Slow parallax movement for establishing shots
+
+Add one simple subject action:
+
+- Turns head slightly
+- Walks slowly forward
+- Signs a document
+- Raises a hand
+- Opens a door
+- Passes an object
+- Looks toward something
+- Lowers head
+
+Add two subtle background movements:
+
+- Smoke drifting
+- Fire flickering
+- Papers moving
+- Curtains shifting
+- Flags waving
+- Rain falling
+- Dust floating
+- Lights flickering
+
+Example motion prompt:
+
+`Slow cinematic push toward the character, subtle layered parallax, the character turns slightly toward the camera, coat moves gently in the wind, smoke drifts in the background, preserve the original graphic novel composition, no face morphing, no body distortion.`
+
+## Story Writing Style Guide
+
+Write the story as a short cinematic cause-and-effect narrative.
+
+Use this structure:
+
+- Hook: start with the most surprising part.
+- Context: quickly explain the situation.
+- Main character or force: introduce the person, group or idea that changes the situation.
+- Decisive action: show what they did.
+- Opposition or complication: introduce resistance.
+- Escalation: show two or three consequences.
+- Result: show who appears to win.
+- Final reversal: end with irony, consequence or surprise.
+
+Writing rules:
+
+- Use short sentences.
+- Use active voice.
+- Focus on conflict and consequence.
+- Keep one idea per sentence.
+- Avoid long explanations.
+- Use transitions such as "but," "then," "until," "in secret," and "years later."
+- End with a twist, irony, lesson or visual callback.
+
+Universal story formula:
+
+`Something valuable exists. Someone wants or controls it. Another person challenges the system. The conflict escalates. One side appears to win. The final consequence changes the meaning of the story.`
+
 ## Workflow
 
 ### 1. Topic Or Ideas
@@ -52,7 +145,7 @@ Ask the user to pick one.
 
 ### 2. Write The 40-Second Story
 
-Write a roughly 40-second story for the chosen topic. Make it feel built for retention:
+Write a roughly 40-second story for the chosen topic using the Story Writing Style Guide. Make it feel built for retention:
 
 - First line must be a scroll-stopping hook.
 - Each sentence should create forward pull.
@@ -73,7 +166,7 @@ If the user gives edits, revise the story and ask for approval again. Continue u
 
 ### 4. Break Into 5-Second Chunks
 
-After approval, act as storyteller, director, and cinematographer. Break the story into about 8 chunks of roughly 5 seconds each.
+After approval, act as storyteller, director, and cinematographer. Break the story into about 8 chunks of roughly 5 seconds each. Use the Camera And Motion Style Guide when writing `camera_motion` and `motion_instruction`.
 
 For each chunk, define:
 
@@ -86,7 +179,7 @@ For each chunk, define:
 - `motion_instruction`
 - `continuity_notes`
 
-The shot descriptions should be ready for ChatGPT image generation and later video animation. Do not include style instructions for Grok-generated prompts; the Grok MCP server owns the style when Grok is used.
+The shot descriptions should be ready for ChatGPT image generation and later video animation. Use the Image Style Prompt Guide for ChatGPT image prompts. Do not add a separate style parameter for Grok-generated prompts; the Grok MCP server owns the style when Grok is used.
 
 ### 5. Build The Reference Plan
 
@@ -150,6 +243,7 @@ Use ChatGPT image generation to create each needed reference image.
 
 For every reference image prompt, require:
 
+- the Image Style Prompt Guide above
 - vertical 9:16 portrait composition
 - YouTube Shorts frame, target 1080x1920
 - full subject visible when it is a character or prop reference
@@ -188,6 +282,7 @@ After the character, location, prop and style references are saved, create one s
 For each scene image:
 
 - Use the approved story chunk.
+- Use the Image Style Prompt Guide above.
 - Use saved character/location/prop reference asset IDs as continuity guidance.
 - Generate one vertical 9:16 YouTube Shorts image, target 1080x1920.
 - Inspect it yourself for aspect ratio, composition, continuity, and story clarity.
