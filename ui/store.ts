@@ -67,6 +67,10 @@ export interface State {
     refFilter: string;
     editingStory: boolean;
     storyDraft: string;
+    /** Shot ids ticked in the Shots tab, for the bulk action bar. */
+    selected: Set<string>;
+    /** Anchor for shift-click range selection. */
+    lastPicked: string | null;
     /** Ids of things with an in-flight request, so buttons can show a spinner. */
     busy: Set<string>;
     toasts: Array<{ id: number; text: string; kind: 'ok' | 'err' | 'info' }>;
@@ -113,6 +117,8 @@ export const state: State = {
     refFilter: 'all',
     editingStory: false,
     storyDraft: '',
+    selected: new Set(),
+    lastPicked: null,
     busy: new Set(),
     toasts: [],
     importOpen: false,
@@ -242,6 +248,9 @@ export async function openProject(id: string): Promise<void> {
     state.openShotId = null;
     state.cutIndex = 0;
     state.editingStory = false;
+    // A selection is a set of shot ids, which mean nothing in another project.
+    state.selected.clear();
+    state.lastPicked = null;
     state.loading = true;
     render();
     try {
@@ -259,7 +268,93 @@ export function closeProject(): void {
     state.snapshot = null;
     state.openShotId = null;
     state.roughCut = false;
+    state.selected.clear();
+    state.lastPicked = null;
     render();
+}
+
+// ---------------------------------------------------------------- selection
+
+/**
+ * Toggle a shot, or select a range when shift is held.
+ *
+ * Range select is worth the few lines: the common operation is "these six
+ * consecutive shots", and ticking them one at a time is exactly the kind of
+ * tedium a selection UI exists to remove.
+ */
+export function pick(shotId: string, ordered: string[], shiftKey: boolean): void {
+    if (shiftKey && state.lastPicked && state.lastPicked !== shotId) {
+        const from = ordered.indexOf(state.lastPicked);
+        const to = ordered.indexOf(shotId);
+        if (from !== -1 && to !== -1) {
+            const [lo, hi] = from < to ? [from, to] : [to, from];
+            // A shift-click extends the selection; it never clears what the
+            // range does not cover.
+            for (const id of ordered.slice(lo, hi + 1)) state.selected.add(id);
+            state.lastPicked = shotId;
+            render();
+            return;
+        }
+    }
+    if (state.selected.has(shotId)) state.selected.delete(shotId);
+    else state.selected.add(shotId);
+    state.lastPicked = shotId;
+    render();
+}
+
+export function selectedShots(): Snapshot['shots'] {
+    return filmShots(state.snapshot).filter((s) => state.selected.has(s.shot_id));
+}
+
+/**
+ * Apply one operation across the selection, one shot at a time.
+ *
+ * Sequential and failure-tolerant on purpose. These are slow, paid operations,
+ * and firing eight image generations at once is a good way to hit the upstream
+ * rate limit and lose half of them. A shot that fails is reported by number
+ * rather than aborting the rest.
+ */
+export async function runBatch(
+    key: string,
+    shots: Snapshot['shots'],
+    verb: string,
+    fn: (shot: Snapshot['shots'][number]) => Promise<unknown>,
+): Promise<void> {
+    if (shots.length === 0) {
+        toast('Nothing selected.', 'info');
+        return;
+    }
+    if (state.busy.has(key)) return;
+    state.busy.add(key);
+    render();
+
+    const failures: string[] = [];
+    let done = 0;
+    for (const shot of shots) {
+        try {
+            await fn(shot);
+            done++;
+        } catch (err) {
+            if (err instanceof ApiError && err.status === 401) {
+                state.authed = false;
+                state.authError = 'That key was rejected. Enter it again.';
+                break;
+            }
+            failures.push(
+                `${String(shot.shot_number).padStart(2, '0')}: ${
+                    err instanceof Error ? err.message : String(err)
+                }`,
+            );
+        }
+    }
+
+    state.busy.delete(key);
+    if (failures.length > 0) {
+        toast(`${verb} ${done} of ${shots.length}. Failed — ${failures[0]}`, 'err');
+    } else {
+        toast(`${verb} ${done} shot${done === 1 ? '' : 's'}.`, 'ok');
+    }
+    await refresh();
 }
 
 export function signOut(): void {

@@ -149,11 +149,11 @@ a short started in Claude can be finished in the browser and vice versa.
 | Screen | What it does |
 |---|---|
 | Projects | Every project as a card: filmstrip of approved plates, logline, progress. |
-| Shots | Each beat with its variations. Click a variation to `approve_still`; Animate, Regenerate, Delete per shot. |
+| Shots | Each beat with its variations. Click a variation to `approve_still`; Animate, Regenerate, Download, Delete per shot. Tick shots (shift-click for a range) to act on several at once. |
 | Story | The saved story text and shot beats. Edit and re-save the manifest. |
 | References | The reference index. Upload a plate, import one by URL, or have Grok generate one. |
 | Jobs | Live job table with elapsed time, upstream errors, Retry and Cancel. |
-| Rough cut | Plays the finished clips back to back, in shot order. |
+| Rough cut | Plays the finished clips back to back, in shot order. Download this clip or all of them. |
 | New short | The five-step wizard: pitch → story → beats → references → run. |
 
 The wizard's first four steps call Grok (`/api/assist` → `chat/completions`) to
@@ -174,6 +174,14 @@ you approve plates first, then press *Animate approved*.
   is still billed.
 - **Rough cut is not a render.** It plays the separate clips in sequence. There
   is no concatenated file on the server, and nothing pretends there is.
+  Downloading gives you the individual mp4s, named
+  `<project>-shot-01.mp4` and zero-padded so they sort into story order on a
+  timeline. Saving several at once makes the browser ask permission once —
+  that is the browser working correctly, not an error.
+- **Downloads proxy through the server.** The clips already have public Storage
+  URLs, but a browser ignores the `download` attribute on a cross-origin link
+  and plays the mp4 in a tab instead of saving it. `GET /api/shots/:id/video`
+  streams it back from our own origin with a real filename.
 - **Reference plates create shots.** Reference assets hang off a shot row, so
   importing one makes a shot. The studio marks these and keeps them out of the
   Shots tab and the shot counts.

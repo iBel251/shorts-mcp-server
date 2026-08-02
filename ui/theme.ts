@@ -232,6 +232,25 @@ label.lbl {
   display: flex; flex-wrap: wrap; gap: 14px; padding: 12px;
   border: 1px solid var(--line); background: var(--panel);
 }
+.shot.picked { border-color: var(--accent); background: #1b1e1c; }
+.shot-pick {
+  flex: 0 0 auto; display: flex; align-items: flex-start;
+  padding-top: 2px; cursor: pointer;
+}
+.shot-pick input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+
+.select-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 9px 12px; border: 1px solid var(--line);
+  background: var(--bg-deep); position: sticky; top: 0; z-index: 5;
+}
+.select-bar.active { border-color: var(--line-3); background: var(--panel-3); }
+.select-all {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  font-size: 11px; letter-spacing: 0.06em; color: var(--muted);
+}
+.select-bar.active .select-all { color: var(--accent); }
+.select-all input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
 .shot .thumb {
   flex: 0 0 66px; width: 66px; aspect-ratio: 9 / 16; border: 1px solid var(--line-2);
   position: relative; display: flex; align-items: flex-end; padding: 5px;

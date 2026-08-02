@@ -325,6 +325,53 @@ export const api = {
         }),
 };
 
+/**
+ * Download one shot's clip to disk.
+ *
+ * Goes through `fetch` rather than a plain link because the endpoint needs the
+ * `x-api-key` header, which an `<a href>` cannot carry. The response becomes a
+ * same-origin blob URL, and the `download` attribute *is* honoured for those,
+ * so the file saves with the name the server chose instead of opening in a tab.
+ */
+export async function downloadClip(shotId: string, fallbackName: string): Promise<void> {
+    const key = storedKey();
+    const res = await fetch(`api/shots/${shotId}/video`, {
+        headers: key ? { 'x-api-key': key } : {},
+    });
+    if (res.status === 401) {
+        clearKey();
+        throw new ApiError(401, 'Unauthorized');
+    }
+    if (!res.ok) {
+        let message = `Download failed with ${res.status}`;
+        try {
+            const body = (await res.json()) as { error?: string };
+            if (body.error) message = body.error;
+        } catch {
+            /* the body was not JSON; the status is all we have */
+        }
+        throw new ApiError(res.status, message);
+    }
+
+    // The server names the file; fall back only if the header is missing.
+    const disposition = res.headers.get('content-disposition') ?? '';
+    const matched = /filename="([^"]+)"/.exec(disposition)?.[1];
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    try {
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = matched ?? fallbackName;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+    } finally {
+        // Revoking immediately can cancel the save in some browsers.
+        window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    }
+}
+
 /** Read a File as bare base64, which is what the import endpoints accept. */
 export function fileToBase64(file: File): Promise<string> {
     return new Promise((resolve, reject) => {

@@ -1,4 +1,4 @@
-import { api, type ReferenceView, type ShotView, type Snapshot } from './client.js';
+import { api, downloadClip, type ReferenceView, type ShotView, type Snapshot } from './client.js';
 import { day, el, elapsed, shortId, shotLabel, type Child } from './dom.js';
 import {
     act,
@@ -6,7 +6,9 @@ import {
     filmShots,
     isBusy,
     openProject,
+    pick,
     render,
+    runBatch,
     signOut,
     state,
     toast,
@@ -382,10 +384,13 @@ export function shotsView(snapshot: Snapshot): Child {
         );
     }
 
+    const order = shots.map((s) => s.shot_id);
+
     return el(
         'div',
         { class: 'shot-list' },
-        shots.map((shot) => shotRow(shot)),
+        selectionBar(shots),
+        shots.map((shot) => shotRow(shot, order)),
         el(
             'div',
             null,
@@ -405,14 +410,179 @@ export function shotsView(snapshot: Snapshot): Child {
     );
 }
 
-function shotRow(shot: ShotView): HTMLElement {
+/**
+ * The bulk action bar.
+ *
+ * Always present rather than appearing on first tick, so the select-all
+ * control has somewhere to live and the row does not shift the list down the
+ * moment you touch a checkbox. The destructive actions stay disabled until
+ * something is actually selected.
+ */
+function selectionBar(shots: ShotView[]): Child {
+    const chosen = shots.filter((s) => state.selected.has(s.shot_id));
+    const withClips = chosen.filter((s) => s.video_url);
+    const animatable = chosen.filter((s) => s.approved_asset_id);
+    const allPicked = shots.length > 0 && chosen.length === shots.length;
+    const none = chosen.length === 0;
+
+    return el(
+        'div',
+        { class: `select-bar${none ? '' : ' active'}` },
+        el(
+            'label',
+            { class: 'select-all' },
+            el('input', {
+                type: 'checkbox',
+                checked: allPicked,
+                onchange: () => {
+                    if (allPicked) state.selected.clear();
+                    else for (const s of shots) state.selected.add(s.shot_id);
+                    state.lastPicked = null;
+                    render();
+                },
+            }),
+            el(
+                'span',
+                { class: 'mono' },
+                none ? 'select all' : `${chosen.length} of ${shots.length} selected`,
+            ),
+        ),
+
+        el('span', { class: 'spacer' }),
+
+        el(
+            'button',
+            {
+                class: `btn small${isBusy('batch-download') ? ' busy' : ''}`,
+                type: 'button',
+                disabled: withClips.length === 0,
+                title:
+                    withClips.length === 0
+                        ? 'None of the selected shots has a rendered clip'
+                        : `Save ${withClips.length} mp4 file${withClips.length === 1 ? '' : 's'}`,
+                onclick: () => void downloadMany(withClips),
+            },
+            `↓ Download clips${withClips.length ? ` (${withClips.length})` : ''}`,
+        ),
+        el(
+            'button',
+            {
+                class: `btn small accent-hover${isBusy('batch-animate') ? ' busy' : ''}`,
+                type: 'button',
+                disabled: animatable.length === 0,
+                title:
+                    animatable.length === 0
+                        ? 'Selected shots have no approved still'
+                        : 'Submit each selected shot for video generation',
+                onclick: () =>
+                    void runBatch('batch-animate', animatable, 'Submitted', (shot) =>
+                        api.animate(shot.shot_id, {
+                            motion_instruction:
+                                shot.motion_instruction?.trim() ||
+                                'slow push in, subtle atmospheric drift in the background',
+                            duration: state.config?.defaults.duration,
+                        }),
+                    ),
+            },
+            'Animate',
+        ),
+        el(
+            'button',
+            {
+                class: `btn small${isBusy('batch-regen') ? ' busy' : ''}`,
+                type: 'button',
+                disabled: none,
+                onclick: () => {
+                    if (
+                        !window.confirm(
+                            `Generate fresh variations for ${chosen.length} shot${
+                                chosen.length === 1 ? '' : 's'
+                            }? This spends credits per shot.`,
+                        )
+                    ) {
+                        return;
+                    }
+                    void runBatch('batch-regen', chosen, 'Regenerated', (shot) =>
+                        api.regenerate(shot.shot_id, {
+                            count: state.config?.defaults.still_count ?? 4,
+                        }),
+                    );
+                },
+            },
+            'Regenerate',
+        ),
+        el(
+            'button',
+            {
+                class: `btn small danger${isBusy('batch-delete') ? ' busy' : ''}`,
+                type: 'button',
+                disabled: none,
+                style: { background: 'transparent' },
+                onclick: () => {
+                    if (
+                        !window.confirm(
+                            `Delete ${chosen.length} shot${
+                                chosen.length === 1 ? '' : 's'
+                            }, including every still and clip on them? This cannot be undone.`,
+                        )
+                    ) {
+                        return;
+                    }
+                    void (async () => {
+                        await runBatch('batch-delete', chosen, 'Deleted', (shot) =>
+                            api.deleteShot(shot.shot_id),
+                        );
+                        state.selected.clear();
+                        render();
+                    })();
+                },
+            },
+            'Delete',
+        ),
+    );
+}
+
+/**
+ * Save several clips in sequence.
+ *
+ * Browsers throttle or block a burst of programmatic downloads, so these are
+ * spaced rather than fired at once. Chrome still asks permission once for
+ * multiple files, which is the browser working correctly.
+ */
+async function downloadMany(shots: ShotView[]): Promise<void> {
+    const name = state.snapshot?.project.name ?? 'short';
+    await runBatch('batch-download', shots, 'Downloaded', async (shot) => {
+        await downloadClip(
+            shot.shot_id,
+            `${name}-shot-${String(shot.shot_number).padStart(2, '0')}.mp4`,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 400));
+    });
+}
+
+function shotRow(shot: ShotView, order: string[]): HTMLElement {
     const cover = shot.stills.find((s) => s.approved) ?? shot.stills.at(-1);
     const label = shot.video_url ? 'clip' : shot.approved_asset_id ? 'still' : 'empty';
     const busyKey = `shot:${shot.shot_id}`;
+    const picked = state.selected.has(shot.shot_id);
 
     return el(
         'article',
-        { class: 'shot' },
+        { class: `shot${picked ? ' picked' : ''}` },
+        el(
+            'label',
+            {
+                class: 'shot-pick',
+                title: 'Select this shot — shift-click to select a range',
+                onclick: (event: MouseEvent) => {
+                    // The label's own click drives selection, so the nested
+                    // checkbox must not also toggle it.
+                    event.preventDefault();
+                    pick(shot.shot_id, order, event.shiftKey);
+                },
+            },
+            el('input', { type: 'checkbox', checked: picked, tabindex: '-1' }),
+        ),
         el(
             'div',
             {
@@ -478,6 +648,17 @@ function shotRow(shot: ShotView): HTMLElement {
                     },
                     'Animate',
                 ),
+                shot.video_url &&
+                    el(
+                        'button',
+                        {
+                            class: `btn small${isBusy(`dl:${shot.shot_id}`) ? ' busy' : ''}`,
+                            type: 'button',
+                            title: 'Save the rendered mp4',
+                            onclick: () => void downloadOne(shot),
+                        },
+                        '↓ Download',
+                    ),
                 el(
                     'button',
                     {
@@ -548,6 +729,20 @@ function variation(
         },
         el('img', { src: still.url, alt: '', loading: 'lazy' }),
         el('span', { class: 'badge' }, still.approved ? '✓' : String(index + 1)),
+    );
+}
+
+/** Save one shot's clip. Downloads never refresh — nothing on the server changed. */
+export async function downloadOne(shot: ShotView): Promise<void> {
+    const name = state.snapshot?.project.name ?? 'short';
+    await act(
+        `dl:${shot.shot_id}`,
+        () =>
+            downloadClip(
+                shot.shot_id,
+                `${name}-shot-${String(shot.shot_number).padStart(2, '0')}.mp4`,
+            ),
+        { refresh: false },
     );
 }
 

@@ -1,3 +1,6 @@
+import { Readable } from 'node:stream';
+import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
+import { pipeline } from 'node:stream/promises';
 import express, { type Request, type Response, type Router } from 'express';
 import { pitchIdeas, planReferences, planShots, writeStory } from './assist.js';
 import {
@@ -16,6 +19,7 @@ import {
     deleteReferenceAsset,
     deleteShot,
     getJob,
+    getProject,
     getShot,
     listProjects,
     listShots,
@@ -142,6 +146,23 @@ function strList(source: Record<string, unknown>, key: string): string[] {
     const value = source[key];
     if (!Array.isArray(value)) return [];
     return value.filter((v): v is string => typeof v === 'string' && v.trim() !== '');
+}
+
+/**
+ * A filename that survives every filesystem and reads as what it is.
+ *
+ * Zero-padded so a directory of clips sorts into story order rather than
+ * 1, 10, 11, 2 — the whole point of downloading them is to drop them on a
+ * timeline in sequence.
+ */
+function clipFilename(projectName: string, shotNumber: number): string {
+    const slug =
+        projectName
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 48) || 'short';
+    return `${slug}-shot-${String(shotNumber).padStart(2, '0')}.mp4`;
 }
 
 function param(req: Request, key: string): string {
@@ -441,6 +462,53 @@ export function apiRoutes(): Router {
                 width: still.width,
                 height: still.height,
             };
+        }),
+    );
+
+    // ----------------------------------------------------------- download
+
+    /**
+     * Stream a shot's finished clip back through the server.
+     *
+     * The clip already has a public Storage URL, so this looks redundant — but
+     * a browser ignores the `download` attribute on a cross-origin link and
+     * navigates to the file instead, which for an mp4 means "plays in a tab"
+     * rather than "saves". Coming back through our own origin makes the
+     * download honest, and lets the file arrive named after its shot rather
+     * than as a uuid.
+     */
+    router.get(
+        '/shots/:id/video',
+        route('download clip', async (req, res) => {
+            const shotId = param(req, 'id');
+            const shot = await getShot(shotId);
+            if (!shot) throw new HttpError(404, `No shot with id ${shotId}`);
+
+            const assets = await listAssetsForShots([shotId]);
+            const video = assets.filter((a) => a.kind === 'video').at(-1);
+            if (!video) throw new HttpError(404, 'This shot has no rendered clip yet');
+
+            const project = await getProject(shot.project_id);
+            const upstream = await fetch(video.public_url, {
+                signal: AbortSignal.timeout(120_000),
+            });
+            if (!upstream.ok || !upstream.body) {
+                throw new HttpError(502, `Storage returned ${upstream.status} for the clip`);
+            }
+
+            res.setHeader('Content-Type', 'video/mp4');
+            res.setHeader('Content-Disposition', `attachment; filename="${clipFilename(
+                project?.name ?? 'short',
+                shot.shot_number,
+            )}"`);
+            const length = upstream.headers.get('content-length');
+            if (length) res.setHeader('Content-Length', length);
+
+            // Streamed rather than buffered: a 15-second clip is small, but
+            // holding every concurrent download in memory on a free instance
+            // is a needless way to fall over.
+            await pipeline(Readable.fromWeb(upstream.body as NodeReadableStream), res);
+            return undefined;
         }),
     );
 

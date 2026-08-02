@@ -1,5 +1,6 @@
 import {
     api,
+    downloadClip,
     fileToBase64,
     type Critique,
     type ShotView,
@@ -7,7 +8,8 @@ import {
     type StillView,
 } from './client.js';
 import { el, shortId, shotLabel, type Child } from './dom.js';
-import { act, finishedClips, isBusy, render, state, toast } from './store.js';
+import { act, finishedClips, isBusy, render, runBatch, state, toast } from './store.js';
+import { downloadOne } from './views.js';
 
 /**
  * Everything that floats above the main surface.
@@ -107,6 +109,16 @@ export function shotDrawer(snapshot: Snapshot): Child {
                     frameTile('first_frame', shot.first_frame_url),
                     frameTile('last_frame', shot.last_frame_url),
                 ),
+                shot.video_url &&
+                    el(
+                        'button',
+                        {
+                            class: `btn small${isBusy(`dl:${shot.shot_id}`) ? ' busy' : ''}`,
+                            type: 'button',
+                            onclick: () => void downloadOne(shot),
+                        },
+                        `↓ Download clip (720p · 9:16)`,
+                    ),
             ),
 
             el(
@@ -310,7 +322,32 @@ export function roughCut(snapshot: Snapshot): Child {
                         : 'no finished clips yet',
                 ),
             ),
-            el('button', { class: 'btn tiny', type: 'button', onclick: close }, '✕ close'),
+            el(
+                'div',
+                { style: { display: 'flex', gap: '8px' } },
+                current &&
+                    el(
+                        'button',
+                        {
+                            class: `btn small${isBusy(`dl:${current.shot_id}`) ? ' busy' : ''}`,
+                            type: 'button',
+                            onclick: () => void downloadOne(current),
+                        },
+                        '↓ This clip',
+                    ),
+                clips.length > 0 &&
+                    el(
+                        'button',
+                        {
+                            class: `btn small${isBusy('batch-download') ? ' busy' : ''}`,
+                            type: 'button',
+                            title: `Save all ${clips.length} finished clips, in shot order`,
+                            onclick: () => void downloadAll(clips),
+                        },
+                        `↓ All ${clips.length}`,
+                    ),
+                el('button', { class: 'btn tiny', type: 'button', onclick: close }, '✕ close'),
+            ),
         ),
 
         el(
@@ -380,6 +417,18 @@ export function roughCut(snapshot: Snapshot): Child {
             }),
         ),
     );
+}
+
+/** Save every finished clip, in shot order, spaced so the browser keeps up. */
+async function downloadAll(clips: ShotView[]): Promise<void> {
+    const name = state.snapshot?.project.name ?? 'short';
+    await runBatch('batch-download', clips, 'Downloaded', async (shot) => {
+        await downloadClip(
+            shot.shot_id,
+            `${name}-shot-${String(shot.shot_number).padStart(2, '0')}.mp4`,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 400));
+    });
 }
 
 // -------------------------------------------------------------- add a shot
