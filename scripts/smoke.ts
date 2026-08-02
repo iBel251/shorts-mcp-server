@@ -241,6 +241,20 @@ try {
         }
         pass('UI resources are self-contained documents with no external refs');
 
+        // Widgets must be able to render from the tool result's own base64
+        // rather than fetching storage: a declared resourceDomains allowlist is
+        // not guaranteed to be honoured, and a blocked fetch shows as a black
+        // rectangle inside a perfectly rendered widget.
+        for (const uri of uris) {
+            const read = await client.readResource({ uri });
+            const html = (read.contents[0] as { text?: string }).text ?? '';
+            assert.ok(
+                html.includes('base64,'),
+                `${uri} must inline images from the result as data: URIs`,
+            );
+        }
+        pass('widgets inline result images as data: URIs (nothing for CSP to block)');
+
         // Every referenced resource must actually exist: a tool pointing at a
         // missing ui:// is a broken card with no error anyone would see.
         for (const name of ['generate_still', 'animate', 'check_job']) {

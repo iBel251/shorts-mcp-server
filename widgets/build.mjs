@@ -82,6 +82,14 @@ figcaption {
   text-align: center; font-size: 12px; color: var(--muted); background: var(--card);
 }
 .blocked a { color: var(--accent); }
+.sheet { width: 100%; border-radius: 10px; border: 1px solid var(--line); }
+.picks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.pick {
+  font: inherit; font-size: 12px; padding: 5px 11px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--card); color: var(--fg);
+}
+.pick:hover { border-color: var(--accent); }
+.pick.approved { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 video { width: 100%; border-radius: 10px; border: 1px solid var(--line); background: #000; }
 .frames { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
 .frames figure { margin: 0; }

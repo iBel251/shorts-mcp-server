@@ -35,6 +35,8 @@ let jobId: string | undefined;
 let startedAt = Date.now();
 let polling = false;
 let timer: number | undefined;
+/** Tiled first/last frame from the tool result, inlined as a data: URI. */
+let framesDataUri: string | undefined;
 
 function escapeHtml(value: string): string {
     return value.replace(
@@ -42,6 +44,19 @@ function escapeHtml(value: string): string {
         (c) =>
             ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c,
     );
+}
+
+/**
+ * Inline the tool result's image block as a data: URI.
+ *
+ * The sandbox cannot block what it does not have to fetch, and a declared
+ * resourceDomains allowlist is not guaranteed to be honoured by the host.
+ */
+function captureFrames(result: {
+    content?: Array<{ type: string; data?: string; mimeType?: string }>;
+}): void {
+    const image = result.content?.find((c) => c.type === 'image' && c.data);
+    if (image) framesDataUri = `data:${image.mimeType ?? 'image/jpeg'};base64,${image.data}`;
 }
 
 function elapsed(): string {
@@ -87,8 +102,15 @@ function render(job: JobPayload): void {
                 : ''
         }
         ${
-            job.first_frame_url && job.last_frame_url
-                ? `<div class="frames">
+            // The tiled frame pair from the tool result: a data: URI, so the
+            // sandbox has no network request to block. Falls back to fetching
+            // the stored PNGs only if the result carried no image block.
+            framesDataUri
+                ? `<img class="sheet" src="${framesDataUri}" alt="First and last frame" />
+                   <p class="note">Left is the first frame, right is the last. Compare them
+                   for style drift before accepting this shot.</p>`
+                : job.first_frame_url && job.last_frame_url
+                  ? `<div class="frames">
                        <figure>
                            <img src="${escapeHtml(job.first_frame_url)}" alt="First frame" />
                            <figcaption>First frame</figcaption>
@@ -97,12 +119,36 @@ function render(job: JobPayload): void {
                            <img src="${escapeHtml(job.last_frame_url)}" alt="Last frame" />
                            <figcaption>Last frame</figcaption>
                        </figure>
-                   </div>
-                   <p class="note">Compare the two frames for style drift before accepting
-                   this shot.</p>`
-                : ''
+                     </div>
+                     <p class="note">Compare the two frames for style drift before accepting
+                     this shot.</p>`
+                  : ''
         }
     `;
+
+    // Video cannot practically be inlined, so it is the one thing still fetched
+    // from storage and the one thing a sandbox can still block.
+    const video = root.querySelector('video');
+    if (video && job.video_url) {
+        video.addEventListener('error', () => {
+            const holder = document.createElement('div');
+            holder.className = 'blocked';
+            holder.innerHTML = '<span>video blocked by sandbox</span>';
+            const link = document.createElement('a');
+            link.textContent = 'open clip ↗';
+            link.href = job.video_url!;
+            link.target = '_blank';
+            link.rel = 'noreferrer';
+            link.addEventListener('click', (e) => {
+                if (app.getHostCapabilities()?.openLinks) {
+                    e.preventDefault();
+                    void app.openLink({ url: job.video_url! });
+                }
+            });
+            holder.appendChild(link);
+            video.replaceWith(holder);
+        });
+    }
 }
 
 /** Poll check_job until the job settles. */
@@ -113,12 +159,17 @@ async function poll(): Promise<void> {
     if (!app.getHostCapabilities()?.serverTools) return;
     polling = true;
     try {
+        // include_images stays on: check_job only attaches them once the job is
+        // done, so nothing is transferred on the in-progress ticks, and the
+        // final tick gives us the frames to inline. critique stays off — the
+        // vision pass costs real money and nothing here reads it.
         const result: any = await app.callServerTool({
             name: 'check_job',
-            arguments: { job_id: jobId, include_images: false, critique: false },
+            arguments: { job_id: jobId, include_images: true, critique: false },
         });
         const text = result.content?.find((c: { type: string }) => c.type === 'text');
         const job: JobPayload = result.structuredContent ?? (text ? JSON.parse(text.text) : {});
+        captureFrames(result);
         render(job);
 
         const settled = ['done', 'failed', 'expired'].includes(job.status ?? '');
@@ -147,6 +198,8 @@ app.ontoolresult = (result) => {
             }
         }
     }
+
+    captureFrames(result);
 
     jobId = job.job_id;
     startedAt = Date.now();
