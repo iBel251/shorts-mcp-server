@@ -20,6 +20,7 @@ import {
 } from './config.js';
 import {
     approveStillExclusively,
+    createReferenceAsset,
     createAsset,
     createJob,
     createShot,
@@ -28,15 +29,20 @@ import {
     getOrCreateDefaultProject,
     getOrCreateProjectByName,
     getProject,
+    getStoryManifest,
+    listAssetsByIds,
     listProjects,
     getShot,
     latestJobsForShots,
     listAssetsForShots,
+    listReferenceAssets,
     listShots,
     nextShotNumber,
+    saveStoryManifest,
     setShotStatus,
     type AssetRow,
     type JobRow,
+    type ReferenceAssetRow,
 } from './db.js';
 import { errorMessage, log } from './logger.js';
 import { assetPath, persistFromUrl, putBuffer } from './storage.js';
@@ -55,6 +61,15 @@ import { editImage, generateImage, submitVideo } from './xai.js';
 type ContentBlock = CallToolResult['content'][number];
 
 const IMPORT_MAX_BYTES = 20 * 1024 * 1024;
+const REFERENCE_ROLES = [
+    'character',
+    'character_turnaround',
+    'expression_sheet',
+    'prop',
+    'location',
+    'style',
+    'other',
+] as const;
 
 // Structured JSON in `content` as well as `structuredContent`, since clients
 // vary in which they surface to the model.
@@ -371,6 +386,136 @@ function inspectImage(bytes: Uint8Array, declared?: string): {
             declared ? `; received ${declared}` : ''
         }`,
     );
+}
+
+type ImportArgs = {
+    image_url?: string | undefined;
+    image_base64?: string | undefined;
+    image_file?: { data: string; mime_type?: string | undefined; filename?: string | undefined };
+};
+
+async function loadImportedImage(args: ImportArgs): Promise<{
+    bytes: Uint8Array;
+    contentType?: string;
+    source?: string;
+    image: ReturnType<typeof inspectImage>;
+}> {
+    const sourceCount = [
+        Boolean(args.image_url),
+        Boolean(args.image_base64),
+        Boolean(args.image_file?.data),
+    ].filter(Boolean).length;
+    if (sourceCount !== 1) {
+        throw new Error('Provide exactly one of image_url, image_base64, or image_file.data.');
+    }
+
+    let imported: { bytes: Uint8Array; contentType?: string; source?: string };
+    if (args.image_url) {
+        const downloaded = await downloadImportUrl(args.image_url);
+        imported = {
+            bytes: downloaded.bytes,
+            contentType: downloaded.contentType,
+            source: downloaded.finalUrl,
+        };
+    } else if (args.image_file?.data) {
+        const parsed = parseBase64Image(args.image_file.data);
+        imported = {
+            bytes: parsed.bytes,
+            contentType: args.image_file.mime_type?.toLowerCase() ?? parsed.contentType,
+            source: args.image_file.filename,
+        };
+    } else {
+        const parsed = parseBase64Image(args.image_base64!);
+        imported = {
+            bytes: parsed.bytes,
+            contentType: parsed.contentType,
+        };
+    }
+
+    return {
+        ...imported,
+        image: inspectImage(imported.bytes, imported.contentType),
+    };
+}
+
+async function resolveProjectId(args: {
+    project_id?: string | undefined;
+    project_name?: string | undefined;
+}): Promise<string | undefined> {
+    if (args.project_id) {
+        const project = await getProject(args.project_id);
+        if (!project) return undefined;
+        return args.project_id;
+    }
+    if (args.project_name) return (await getOrCreateProjectByName(args.project_name)).id;
+    return (await getOrCreateDefaultProject()).id;
+}
+
+async function importStillAsset(input: {
+    projectId: string;
+    shotNumber?: number | undefined;
+    description: string;
+    imported: Awaited<ReturnType<typeof loadImportedImage>>;
+}): Promise<{
+    asset: AssetRow;
+    shotId: string;
+    shotNumber: number;
+    publicUrl: string;
+    width?: number;
+    height?: number;
+    mimeType: string;
+    source?: string;
+}> {
+    const shotNumber = input.shotNumber ?? (await nextShotNumber(input.projectId));
+    const shot = await createShot({
+        projectId: input.projectId,
+        shotNumber,
+        description: input.description,
+    });
+
+    const id = randomUUID();
+    const stored = await putBuffer(
+        assetPath(shot.id, 'still', id, input.imported.image.ext),
+        input.imported.bytes,
+        input.imported.image.mimeType,
+    );
+    const asset = await createAsset({
+        shotId: shot.id,
+        kind: 'still',
+        storagePath: stored.storagePath,
+        publicUrl: stored.publicUrl,
+    });
+    await setShotStatus(shot.id, 'still_ready');
+
+    return {
+        asset,
+        shotId: shot.id,
+        shotNumber: shot.shot_number,
+        publicUrl: asset.public_url,
+        width: input.imported.image.width,
+        height: input.imported.image.height,
+        mimeType: input.imported.image.mimeType,
+        source: input.imported.source,
+    };
+}
+
+async function referenceRowsWithUrls(refs: ReferenceAssetRow[]): Promise<Array<Record<string, unknown>>> {
+    const assets = await listAssetsByIds(refs.map((r) => r.asset_id));
+    const byId = new Map(assets.map((a) => [a.id, a]));
+    return refs.map((ref) => {
+        const asset = byId.get(ref.asset_id);
+        return {
+            reference_id: ref.id,
+            asset_id: ref.asset_id,
+            role: ref.role,
+            label: ref.label,
+            notes: ref.notes,
+            metadata: ref.metadata,
+            url: asset?.public_url,
+            shot_id: asset?.shot_id,
+            created_at: ref.created_at,
+        };
+    });
 }
 
 export function registerTools(server: McpServer): void {
@@ -776,6 +921,206 @@ export function registerTools(server: McpServer): void {
                 },
                 images,
             );
+        }),
+    );
+
+    // -------------------------------------------------------- import_reference_image
+
+    server.registerTool(
+        'import_reference_image',
+        {
+            title: 'Import a reusable reference image',
+            description:
+                'Import an external image and tag it as a reusable story reference, such ' +
+                'as a character design, expression sheet, prop, location or style plate. ' +
+                'Returns an asset_id that can be passed in generate_still.reference_asset_ids.',
+            _meta: uiMeta(GALLERY_URI),
+            inputSchema: {
+                image_url: z.string().url().optional().describe('Public or signed HTTP(S) URL.'),
+                image_base64: z
+                    .string()
+                    .optional()
+                    .describe('Base64 image bytes, with or without a data URL prefix.'),
+                image_file: z
+                    .object({
+                        data: z.string().describe('Base64 image bytes.'),
+                        mime_type: z.string().optional().describe('Declared MIME type.'),
+                        filename: z.string().optional().describe('Original filename, if known.'),
+                    })
+                    .optional(),
+                project_id: z.string().optional().describe('Existing project id.'),
+                project_name: z
+                    .string()
+                    .optional()
+                    .describe('Project name, created if it does not exist.'),
+                role: z
+                    .enum(REFERENCE_ROLES)
+                    .describe('What kind of reusable reference this image is.'),
+                label: z
+                    .string()
+                    .min(1)
+                    .describe('Human-readable name, e.g. "Mara main design".'),
+                notes: z.string().optional().describe('Short continuity notes.'),
+                metadata: z
+                    .record(z.string(), z.unknown())
+                    .optional()
+                    .describe('Small structured metadata object.'),
+                include_image: z
+                    .boolean()
+                    .optional()
+                    .describe('Embed a preview of the imported reference. Default true.'),
+            },
+        },
+        guard('import_reference_image', async (args) => {
+            const projectId = await resolveProjectId(args);
+            if (!projectId) return fail(`No project with id ${args.project_id}`);
+
+            const imported = await loadImportedImage(args);
+            const still = await importStillAsset({
+                projectId,
+                description: `Reference image: ${args.role} - ${args.label}`,
+                imported,
+            });
+            const ref = await createReferenceAsset({
+                projectId,
+                assetId: still.asset.id,
+                role: args.role,
+                label: args.label,
+                notes: args.notes,
+                metadata: args.metadata,
+            });
+
+            const images =
+                args.include_image === false
+                    ? []
+                    : await imageBlocks(
+                          still.publicUrl,
+                          `Reference ${args.label} - asset_id ${still.asset.id}`,
+                      );
+
+            return ok(
+                {
+                    reference_id: ref.id,
+                    asset_id: still.asset.id,
+                    project_id: projectId,
+                    role: ref.role,
+                    label: ref.label,
+                    notes: ref.notes,
+                    metadata: ref.metadata,
+                    url: still.publicUrl,
+                    mime_type: still.mimeType,
+                    ...(still.width && still.height
+                        ? { width: still.width, height: still.height }
+                        : {}),
+                    hint:
+                        'Stored as a reusable reference. Use this asset_id in ' +
+                        'generate_still.reference_asset_ids for later scene stills.',
+                },
+                images,
+            );
+        }),
+    );
+
+    // ---------------------------------------------------------- save_story_manifest
+
+    server.registerTool(
+        'save_story_manifest',
+        {
+            title: 'Save story manifest',
+            description:
+                'Save or replace the structured story manifest for a project. Use this ' +
+                'after analyzing a story into characters, references and planned shots.',
+            inputSchema: {
+                project_id: z.string().optional().describe('Existing project id.'),
+                project_name: z
+                    .string()
+                    .optional()
+                    .describe('Project name, created if it does not exist.'),
+                title: z.string().optional().describe('Story or short title.'),
+                story_text: z.string().optional().describe('Original story text or summary.'),
+                manifest: z
+                    .record(z.string(), z.unknown())
+                    .describe('Structured JSON manifest for characters, references and shots.'),
+            },
+        },
+        guard('save_story_manifest', async (args) => {
+            const projectId = await resolveProjectId(args);
+            if (!projectId) return fail(`No project with id ${args.project_id}`);
+
+            const row = await saveStoryManifest({
+                projectId,
+                title: args.title,
+                storyText: args.story_text,
+                manifest: args.manifest,
+            });
+
+            return ok({
+                project_id: projectId,
+                manifest_id: row.id,
+                title: row.title,
+                updated_at: row.updated_at,
+                hint:
+                    'Manifest saved. Use get_story_manifest later to resume this story ' +
+                    'with its reference index.',
+            });
+        }),
+    );
+
+    // ----------------------------------------------------------- get_story_manifest
+
+    server.registerTool(
+        'get_story_manifest',
+        {
+            title: 'Get story manifest',
+            description:
+                'Return the saved story manifest plus reusable reference images for a project.',
+            inputSchema: {
+                project_id: z.string().optional().describe('Existing project id.'),
+                project_name: z.string().optional().describe('Existing project name.'),
+                role: z
+                    .enum(REFERENCE_ROLES)
+                    .optional()
+                    .describe('Optional reference role filter.'),
+                label: z.string().optional().describe('Optional fuzzy label filter.'),
+            },
+        },
+        guard('get_story_manifest', async (args) => {
+            let projectId = args.project_id;
+            if (projectId) {
+                const project = await getProject(projectId);
+                if (!project) return fail(`No project with id ${projectId}`);
+            } else if (args.project_name) {
+                const projects = await listProjects();
+                const match = projects.find(
+                    (p) => p.name.toLowerCase() === args.project_name!.trim().toLowerCase(),
+                );
+                if (!match) return fail(`No project named "${args.project_name}"`);
+                projectId = match.id;
+            } else {
+                projectId = (await getOrCreateDefaultProject()).id;
+            }
+
+            const [manifest, refs] = await Promise.all([
+                getStoryManifest(projectId),
+                listReferenceAssets({ projectId, role: args.role, label: args.label }),
+            ]);
+
+            return ok({
+                project_id: projectId,
+                manifest: manifest
+                    ? {
+                          manifest_id: manifest.id,
+                          title: manifest.title,
+                          story_text: manifest.story_text,
+                          manifest: manifest.manifest,
+                          updated_at: manifest.updated_at,
+                      }
+                    : null,
+                references: await referenceRowsWithUrls(refs),
+                hint:
+                    'Use reference asset_id values in generate_still.reference_asset_ids ' +
+                    'when creating scene stills.',
+            });
         }),
     );
 

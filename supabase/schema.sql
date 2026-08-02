@@ -72,6 +72,42 @@ create index if not exists jobs_open_idx on jobs (status, created_at)
 
 create index if not exists jobs_shot_idx on jobs (shot_id);
 
+-- ------------------------------------------------------------ story memory
+-- Minimal project memory for planning a short before generating shots.
+-- `story_manifests` holds the current structured plan. `reference_assets`
+-- tags normal still assets as reusable character/location/prop/style refs.
+
+create table if not exists story_manifests (
+  id          uuid primary key default gen_random_uuid(),
+  project_id  uuid        not null references projects(id) on delete cascade,
+  title       text,
+  story_text  text,
+  manifest    jsonb       not null default '{}'::jsonb,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  unique (project_id)
+);
+
+create index if not exists story_manifests_project_idx
+  on story_manifests (project_id);
+
+create table if not exists reference_assets (
+  id          uuid primary key default gen_random_uuid(),
+  project_id  uuid        not null references projects(id) on delete cascade,
+  asset_id    uuid        not null references assets(id) on delete cascade,
+  role        text        not null,
+  label       text        not null,
+  notes       text,
+  metadata    jsonb       not null default '{}'::jsonb,
+  created_at  timestamptz not null default now()
+);
+
+create index if not exists reference_assets_project_idx
+  on reference_assets (project_id, role, label);
+
+create unique index if not exists reference_assets_asset_idx
+  on reference_assets (asset_id);
+
 -- --------------------------------------------------------------------- rls
 -- Supabase issues a public anon key for every project and the REST API is
 -- internet-facing, so with RLS off these tables would be readable and
@@ -88,3 +124,5 @@ alter table projects enable row level security;
 alter table shots    enable row level security;
 alter table assets   enable row level security;
 alter table jobs     enable row level security;
+alter table story_manifests  enable row level security;
+alter table reference_assets enable row level security;

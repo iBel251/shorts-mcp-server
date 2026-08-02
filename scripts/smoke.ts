@@ -151,8 +151,11 @@ try {
             'approve_still',
             'check_job',
             'generate_still',
+            'get_story_manifest',
             'import_image',
+            'import_reference_image',
             'list_shots',
+            'save_story_manifest',
         ]);
         pass(`tools/list returns the expected generation + import tools`);
 
@@ -186,6 +189,13 @@ try {
         assert.ok(propsOf('import_image').includes('image_base64'));
         assert.ok(propsOf('import_image').includes('image_file'));
         pass('import_image accepts URL, base64 and file-like image payloads');
+
+        assert.ok(propsOf('import_reference_image').includes('role'));
+        assert.ok(propsOf('import_reference_image').includes('label'));
+        assert.ok(propsOf('import_reference_image').includes('image_url'));
+        assert.ok(propsOf('save_story_manifest').includes('manifest'));
+        assert.ok(propsOf('get_story_manifest').includes('role'));
+        pass('story manifest and reference-image tools are exposed');
 
         // Token control for the embedded images.
         assert.ok(propsOf('generate_still').includes('include_images'));
@@ -307,12 +317,12 @@ try {
             new StreamableHTTPClientTransport(new URL(`${base}${SECRET}`)),
         );
         const { tools } = await client.listTools();
-        assert.equal(tools.length, 6, `expected 6 tools over URL auth, got ${tools.length}`);
+        assert.equal(tools.length, 9, `expected 9 tools over URL auth, got ${tools.length}`);
 
         // Exercise a second round trip so session reuse under the prefix is
         // covered, not just initialize.
         const again = await client.listTools();
-        assert.equal(again.tools.length, 6);
+        assert.equal(again.tools.length, 9);
 
         await client.close();
         pass('full MCP handshake + session reuse over /<secret> (no headers at all)');
@@ -360,7 +370,7 @@ try {
                 assert.ok(!meta.ui?.resourceUri, `${name} must not reference a UI resource`);
                 assert.ok(!meta['ui/resourceUri'], `${name} must not carry the flat key`);
             }
-            assert.equal(offTools.length, 6, 'tools themselves are unaffected');
+            assert.equal(offTools.length, 9, 'tools themselves are unaffected');
             pass('ENABLE_MCP_APPS=false removes both the resources and the tool _meta');
         } finally {
             await offClient.close().catch(() => {});

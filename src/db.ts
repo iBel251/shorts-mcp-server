@@ -58,6 +58,27 @@ export interface JobRow {
     updated_at: string;
 }
 
+export interface StoryManifestRow {
+    id: string;
+    project_id: string;
+    title: string | null;
+    story_text: string | null;
+    manifest: Record<string, unknown>;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface ReferenceAssetRow {
+    id: string;
+    project_id: string;
+    asset_id: string;
+    role: string;
+    label: string;
+    notes: string | null;
+    metadata: Record<string, unknown>;
+    created_at: string;
+}
+
 // ----------------------------------------------------------------- client
 
 let client: SupabaseClient | undefined;
@@ -247,6 +268,13 @@ export async function listAssetsForShots(shotIds: string[]): Promise<AssetRow[]>
     return (res.data ?? []) as AssetRow[];
 }
 
+export async function listAssetsByIds(assetIds: string[]): Promise<AssetRow[]> {
+    if (assetIds.length === 0) return [];
+    const res = await db().from('assets').select('*').in('id', assetIds);
+    if (res.error) throw new Error(`List assets by id: ${res.error.message}`);
+    return (res.data ?? []) as AssetRow[];
+}
+
 /** Approve one still and un-approve every sibling of the same shot. */
 export async function approveStillExclusively(asset: AssetRow): Promise<void> {
     const clear = await db()
@@ -330,4 +358,88 @@ export async function latestJobsForShots(shotIds: string[]): Promise<Map<string,
     const map = new Map<string, JobRow>();
     for (const job of (res.data ?? []) as JobRow[]) map.set(job.shot_id, job);
     return map;
+}
+
+// ----------------------------------------------------------- story memory
+
+export async function saveStoryManifest(input: {
+    projectId: string;
+    title?: string | null;
+    storyText?: string | null;
+    manifest: Record<string, unknown>;
+}): Promise<StoryManifestRow> {
+    return unwrap(
+        await db()
+            .from('story_manifests')
+            .upsert(
+                {
+                    project_id: input.projectId,
+                    title: input.title ?? null,
+                    story_text: input.storyText ?? null,
+                    manifest: input.manifest,
+                    updated_at: new Date().toISOString(),
+                },
+                { onConflict: 'project_id' },
+            )
+            .select()
+            .single(),
+        'Save story manifest',
+    ) as StoryManifestRow;
+}
+
+export async function getStoryManifest(projectId: string): Promise<StoryManifestRow | null> {
+    const res = await db()
+        .from('story_manifests')
+        .select('*')
+        .eq('project_id', projectId)
+        .maybeSingle();
+    if (res.error) throw new Error(`Get story manifest: ${res.error.message}`);
+    return (res.data as StoryManifestRow | null) ?? null;
+}
+
+export async function createReferenceAsset(input: {
+    projectId: string;
+    assetId: string;
+    role: string;
+    label: string;
+    notes?: string | null;
+    metadata?: Record<string, unknown>;
+}): Promise<ReferenceAssetRow> {
+    return unwrap(
+        await db()
+            .from('reference_assets')
+            .upsert(
+                {
+                    project_id: input.projectId,
+                    asset_id: input.assetId,
+                    role: input.role,
+                    label: input.label,
+                    notes: input.notes ?? null,
+                    metadata: input.metadata ?? {},
+                },
+                { onConflict: 'asset_id' },
+            )
+            .select()
+            .single(),
+        'Create reference asset',
+    ) as ReferenceAssetRow;
+}
+
+export async function listReferenceAssets(input: {
+    projectId: string;
+    role?: string;
+    label?: string;
+}): Promise<ReferenceAssetRow[]> {
+    let query = db()
+        .from('reference_assets')
+        .select('*')
+        .eq('project_id', input.projectId)
+        .order('created_at', { ascending: true });
+
+    if (input.role) query = query.eq('role', input.role);
+    if (input.label) query = query.ilike('label', `%${input.label}%`);
+
+    const res = await query;
+    if (res.error) throw new Error(`List reference assets: ${res.error.message}`);
+    return (res.data ?? []) as ReferenceAssetRow[];
 }

@@ -28,6 +28,8 @@ function buildMcpServer(): McpServer {
                 'Pipeline: generate_still → approve_still → animate → check_job. ' +
                 'For externally generated images, use import_image → approve_still → ' +
                 'animate → check_job. ' +
+                'For story projects, save_story_manifest and import_reference_image first, ' +
+                'then use get_story_manifest to retrieve reference asset ids for scenes. ' +
                 'Use list_shots to resume a project cold.\n\n' +
                 'The visual style is locked server-side and is applied to every prompt ' +
                 'automatically — never describe style, outlines, shading, or realism in a ' +
