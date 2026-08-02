@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -37,12 +39,12 @@ import {
     type JobRow,
 } from './db.js';
 import { errorMessage, log } from './logger.js';
-import { assetPath, persistFromUrl } from './storage.js';
+import { assetPath, persistFromUrl, putBuffer } from './storage.js';
 import { advanceJobById } from './worker.js';
 import { editImage, generateImage, submitVideo } from './xai.js';
 
 /**
- * The five tools. The surface is deliberately small.
+ * The core generation surface is deliberately small.
  *
  * Note what is absent: there is no `style` parameter anywhere. Style is a
  * server-owned constant (see config.ts) so it cannot be forgotten or
@@ -51,6 +53,8 @@ import { editImage, generateImage, submitVideo } from './xai.js';
  */
 
 type ContentBlock = CallToolResult['content'][number];
+
+const IMPORT_MAX_BYTES = 20 * 1024 * 1024;
 
 // Structured JSON in `content` as well as `structuredContent`, since clients
 // vary in which they surface to the model.
@@ -169,6 +173,204 @@ function guard<T extends unknown[]>(
 function extOf(url: string, fallback: string): string {
     const match = /\.([a-z0-9]{3,4})(?:\?|#|$)/i.exec(url);
     return match?.[1]?.toLowerCase() ?? fallback;
+}
+
+function isPrivateIp(address: string): boolean {
+    const version = isIP(address);
+    if (version === 4) {
+        const parts = address.split('.').map(Number);
+        const [a, b] = parts;
+        return (
+            a === 10 ||
+            a === 127 ||
+            (a === 169 && b === 254) ||
+            (a === 172 && b !== undefined && b >= 16 && b <= 31) ||
+            (a === 192 && b === 168) ||
+            address === '0.0.0.0'
+        );
+    }
+    if (version === 6) {
+        const lower = address.toLowerCase();
+        return (
+            lower === '::1' ||
+            lower === '::' ||
+            lower.startsWith('fc') ||
+            lower.startsWith('fd') ||
+            lower.startsWith('fe80:') ||
+            lower.startsWith('::ffff:10.') ||
+            lower.startsWith('::ffff:127.') ||
+            lower.startsWith('::ffff:192.168.')
+        );
+    }
+    return false;
+}
+
+async function assertPublicImageUrl(url: URL): Promise<void> {
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+        throw new Error('image_url must be http or https');
+    }
+    if (url.username || url.password) {
+        throw new Error('image_url must not include credentials');
+    }
+
+    const host = url.hostname.toLowerCase();
+    if (
+        host === 'localhost' ||
+        host.endsWith('.localhost') ||
+        host === 'metadata.google.internal'
+    ) {
+        throw new Error('image_url must be publicly reachable, not localhost or metadata');
+    }
+    if (isIP(host) && isPrivateIp(host)) {
+        throw new Error('image_url must not point at a private or loopback address');
+    }
+
+    // Hostnames can resolve to private addresses even when they look public.
+    const addresses = await lookup(host, { all: true }).catch((err) => {
+        throw new Error(`Could not resolve image_url host: ${errorMessage(err)}`);
+    });
+    if (addresses.some((a) => isPrivateIp(a.address))) {
+        throw new Error('image_url resolved to a private or loopback address');
+    }
+}
+
+async function downloadImportUrl(source: string): Promise<{
+    bytes: Uint8Array;
+    contentType?: string;
+    finalUrl: string;
+}> {
+    let url = new URL(source);
+    for (let redirect = 0; redirect <= 5; redirect++) {
+        await assertPublicImageUrl(url);
+        const res = await fetch(url, {
+            redirect: 'manual',
+            signal: AbortSignal.timeout(120_000),
+        });
+
+        if (res.status >= 300 && res.status < 400) {
+            const location = res.headers.get('location');
+            if (!location) throw new Error(`image_url redirected with no Location header`);
+            url = new URL(location, url);
+            continue;
+        }
+        if (!res.ok) {
+            throw new Error(`Download image_url failed with HTTP ${res.status} ${res.statusText}`);
+        }
+
+        const length = Number(res.headers.get('content-length'));
+        if (Number.isFinite(length) && length > IMPORT_MAX_BYTES) {
+            throw new Error(`Imported image is larger than ${IMPORT_MAX_BYTES} bytes`);
+        }
+
+        const body = new Uint8Array(await res.arrayBuffer());
+        if (body.byteLength > IMPORT_MAX_BYTES) {
+            throw new Error(`Imported image is larger than ${IMPORT_MAX_BYTES} bytes`);
+        }
+        return {
+            bytes: body,
+            contentType: res.headers.get('content-type')?.split(';')[0]?.toLowerCase(),
+            finalUrl: url.toString(),
+        };
+    }
+    throw new Error('image_url redirected too many times');
+}
+
+function parseBase64Image(raw: string): { bytes: Uint8Array; contentType?: string } {
+    const trimmed = raw.trim();
+    const match = /^data:([^;,]+);base64,(.*)$/is.exec(trimmed);
+    const contentType = match?.[1]?.toLowerCase();
+    const encoded = (match?.[2] ?? trimmed).replace(/\s/g, '');
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length === 0) {
+        throw new Error('image_base64 must contain valid base64 image data');
+    }
+    const bytes = new Uint8Array(Buffer.from(encoded, 'base64'));
+    if (bytes.byteLength > IMPORT_MAX_BYTES) {
+        throw new Error(`Imported image is larger than ${IMPORT_MAX_BYTES} bytes`);
+    }
+    return { bytes, contentType };
+}
+
+function jpegSize(bytes: Uint8Array): { width: number; height: number } | undefined {
+    if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return undefined;
+    let i = 2;
+    while (i + 9 < bytes.length) {
+        if (bytes[i] !== 0xff) {
+            i++;
+            continue;
+        }
+        const marker = bytes[i + 1]!;
+        const length = (bytes[i + 2]! << 8) | bytes[i + 3]!;
+        if (length < 2) return undefined;
+        if (
+            (marker >= 0xc0 && marker <= 0xc3) ||
+            (marker >= 0xc5 && marker <= 0xc7) ||
+            (marker >= 0xc9 && marker <= 0xcb) ||
+            (marker >= 0xcd && marker <= 0xcf)
+        ) {
+            return {
+                height: (bytes[i + 5]! << 8) | bytes[i + 6]!,
+                width: (bytes[i + 7]! << 8) | bytes[i + 8]!,
+            };
+        }
+        i += 2 + length;
+    }
+    return undefined;
+}
+
+function u24le(bytes: Uint8Array, offset: number): number {
+    return bytes[offset]! | (bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16);
+}
+
+function inspectImage(bytes: Uint8Array, declared?: string): {
+    mimeType: string;
+    ext: 'png' | 'jpg' | 'webp';
+    width?: number;
+    height?: number;
+} {
+    if (bytes.byteLength < 12) throw new Error('Imported image is empty or truncated');
+
+    if (
+        bytes[0] === 0x89 &&
+        bytes[1] === 0x50 &&
+        bytes[2] === 0x4e &&
+        bytes[3] === 0x47 &&
+        bytes[12] === 0x49 &&
+        bytes[13] === 0x48 &&
+        bytes[14] === 0x44 &&
+        bytes[15] === 0x52
+    ) {
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        return {
+            mimeType: 'image/png',
+            ext: 'png',
+            width: view.getUint32(16),
+            height: view.getUint32(20),
+        };
+    }
+
+    const jpg = jpegSize(bytes);
+    if (jpg) return { mimeType: 'image/jpeg', ext: 'jpg', ...jpg };
+
+    const riff = String.fromCharCode(...bytes.slice(0, 4));
+    const webp = String.fromCharCode(...bytes.slice(8, 12));
+    if (riff === 'RIFF' && webp === 'WEBP') {
+        const chunk = String.fromCharCode(...bytes.slice(12, 16));
+        if (chunk === 'VP8X' && bytes.length >= 30) {
+            return {
+                mimeType: 'image/webp',
+                ext: 'webp',
+                width: u24le(bytes, 24) + 1,
+                height: u24le(bytes, 27) + 1,
+            };
+        }
+        return { mimeType: 'image/webp', ext: 'webp' };
+    }
+
+    throw new Error(
+        `Imported image must be PNG, JPEG or WebP${
+            declared ? `; received ${declared}` : ''
+        }`,
+    );
 }
 
 export function registerTools(server: McpServer): void {
@@ -404,6 +606,173 @@ export function registerTools(server: McpServer): void {
                     ...(failures.length > 0
                         ? { warning: `${failures.length} of ${count} generations failed`, failures }
                         : {}),
+                },
+                images,
+            );
+        }),
+    );
+
+    // --------------------------------------------------------------- import_image
+
+    server.registerTool(
+        'import_image',
+        {
+            title: 'Import an external still',
+            description:
+                'Import an externally generated image as a still asset that can be ' +
+                'approved and animated. Use this when an image was created outside this ' +
+                'server, such as ChatGPT image generation. Provide exactly one of ' +
+                'image_url, image_base64, or image_file.data. The server validates PNG, ' +
+                'JPEG, or WebP bytes, persists them to Storage, creates a shot, and ' +
+                'returns an asset_id for approve_still and animate.',
+            _meta: uiMeta(GALLERY_URI),
+            inputSchema: {
+                image_url: z
+                    .string()
+                    .url()
+                    .optional()
+                    .describe('Public or signed HTTP(S) URL for the image to import.'),
+                image_base64: z
+                    .string()
+                    .optional()
+                    .describe(
+                        'Base64 image bytes, with or without a data:image/...;base64, prefix.',
+                    ),
+                image_file: z
+                    .object({
+                        data: z
+                            .string()
+                            .describe(
+                                'Base64 image bytes, with or without a data:image/...;base64, prefix.',
+                            ),
+                        mime_type: z
+                            .string()
+                            .optional()
+                            .describe('Declared MIME type, e.g. image/png.'),
+                        filename: z.string().optional().describe('Original filename, if known.'),
+                    })
+                    .optional()
+                    .describe(
+                        'File-like image payload for hosts that can expose generated files as base64.',
+                    ),
+                project_id: z
+                    .string()
+                    .optional()
+                    .describe('Existing project id. A default project is used if omitted.'),
+                project_name: z
+                    .string()
+                    .optional()
+                    .describe(
+                        'Name of a project to use, created if it does not exist. Ignored when ' +
+                        'project_id is given.',
+                    ),
+                shot_number: z
+                    .number()
+                    .int()
+                    .positive()
+                    .optional()
+                    .describe('Shot number within the project. Auto-assigned if omitted.'),
+                shot_description: z
+                    .string()
+                    .optional()
+                    .describe(
+                        'Description to store for this imported still. Useful for list_shots.',
+                    ),
+                include_image: z
+                    .boolean()
+                    .optional()
+                    .describe('Embed a preview of the imported image. Default true.'),
+            },
+        },
+        guard('import_image', async (args) => {
+            const sourceCount = [
+                Boolean(args.image_url),
+                Boolean(args.image_base64),
+                Boolean(args.image_file?.data),
+            ].filter(Boolean).length;
+            if (sourceCount !== 1) {
+                return fail(
+                    'Provide exactly one of image_url, image_base64, or image_file.data.',
+                );
+            }
+
+            let projectId = args.project_id;
+            if (projectId) {
+                const project = await getProject(projectId);
+                if (!project) return fail(`No project with id ${projectId}`);
+            } else if (args.project_name) {
+                projectId = (await getOrCreateProjectByName(args.project_name)).id;
+            } else {
+                projectId = (await getOrCreateDefaultProject()).id;
+            }
+
+            let imported: { bytes: Uint8Array; contentType?: string; source?: string };
+            if (args.image_url) {
+                const downloaded = await downloadImportUrl(args.image_url);
+                imported = {
+                    bytes: downloaded.bytes,
+                    contentType: downloaded.contentType,
+                    source: downloaded.finalUrl,
+                };
+            } else if (args.image_file?.data) {
+                const parsed = parseBase64Image(args.image_file.data);
+                imported = {
+                    bytes: parsed.bytes,
+                    contentType: args.image_file.mime_type?.toLowerCase() ?? parsed.contentType,
+                    source: args.image_file.filename,
+                };
+            } else {
+                const parsed = parseBase64Image(args.image_base64!);
+                imported = {
+                    bytes: parsed.bytes,
+                    contentType: parsed.contentType,
+                };
+            }
+
+            const image = inspectImage(imported.bytes, imported.contentType);
+            const shotNumber = args.shot_number ?? (await nextShotNumber(projectId));
+            const shot = await createShot({
+                projectId,
+                shotNumber,
+                description:
+                    args.shot_description?.trim() ||
+                    'Imported still generated outside the shorts MCP server',
+            });
+
+            const id = randomUUID();
+            const stored = await putBuffer(
+                assetPath(shot.id, 'still', id, image.ext),
+                imported.bytes,
+                image.mimeType,
+            );
+            const asset = await createAsset({
+                shotId: shot.id,
+                kind: 'still',
+                storagePath: stored.storagePath,
+                publicUrl: stored.publicUrl,
+            });
+            await setShotStatus(shot.id, 'still_ready');
+
+            const images =
+                args.include_image === false
+                    ? []
+                    : await imageBlocks(asset.public_url, `Imported still — asset_id ${asset.id}`);
+
+            return ok(
+                {
+                    asset_id: asset.id,
+                    shot_id: shot.id,
+                    project_id: projectId,
+                    shot_number: shot.shot_number,
+                    url: asset.public_url,
+                    mime_type: image.mimeType,
+                    ...(image.width && image.height
+                        ? { width: image.width, height: image.height }
+                        : {}),
+                    ...(imported.source ? { source: imported.source } : {}),
+                    hint:
+                        'Imported as a still. Call approve_still with this asset_id, then ' +
+                        'animate with the same asset_id and a motion_instruction.',
                 },
                 images,
             );

@@ -151,9 +151,10 @@ try {
             'approve_still',
             'check_job',
             'generate_still',
+            'import_image',
             'list_shots',
         ]);
-        pass(`tools/list returns exactly the 5 specified tools`);
+        pass(`tools/list returns the expected generation + import tools`);
 
         // No tool may expose a style parameter — style is server-owned.
         for (const tool of tools) {
@@ -175,11 +176,16 @@ try {
         assert.ok(propsOf('animate').includes('duration'));
         pass('animate exposes motion_instruction and duration');
 
-        // Projects are addressable without adding tools, keeping the surface at
-        // the five the spec calls for.
+        // Projects are addressable on both generated and imported stills.
         assert.ok(propsOf('generate_still').includes('project_name'));
+        assert.ok(propsOf('import_image').includes('project_name'));
         assert.ok(propsOf('list_shots').includes('project_name'));
-        pass('projects are addressable by name without extra tools');
+        pass('projects are addressable by name');
+
+        assert.ok(propsOf('import_image').includes('image_url'));
+        assert.ok(propsOf('import_image').includes('image_base64'));
+        assert.ok(propsOf('import_image').includes('image_file'));
+        pass('import_image accepts URL, base64 and file-like image payloads');
 
         // Token control for the embedded images.
         assert.ok(propsOf('generate_still').includes('include_images'));
@@ -301,12 +307,12 @@ try {
             new StreamableHTTPClientTransport(new URL(`${base}${SECRET}`)),
         );
         const { tools } = await client.listTools();
-        assert.equal(tools.length, 5, `expected 5 tools over URL auth, got ${tools.length}`);
+        assert.equal(tools.length, 6, `expected 6 tools over URL auth, got ${tools.length}`);
 
         // Exercise a second round trip so session reuse under the prefix is
         // covered, not just initialize.
         const again = await client.listTools();
-        assert.equal(again.tools.length, 5);
+        assert.equal(again.tools.length, 6);
 
         await client.close();
         pass('full MCP handshake + session reuse over /<secret> (no headers at all)');
@@ -354,7 +360,7 @@ try {
                 assert.ok(!meta.ui?.resourceUri, `${name} must not reference a UI resource`);
                 assert.ok(!meta['ui/resourceUri'], `${name} must not carry the flat key`);
             }
-            assert.equal(offTools.length, 5, 'tools themselves are unaffected');
+            assert.equal(offTools.length, 6, 'tools themselves are unaffected');
             pass('ENABLE_MCP_APPS=false removes both the resources and the tool _meta');
         } finally {
             await offClient.close().catch(() => {});

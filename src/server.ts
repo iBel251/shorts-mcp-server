@@ -26,6 +26,8 @@ function buildMcpServer(): McpServer {
             instructions:
                 'Generates stylized flat 2D animated vertical shorts via the xAI Imagine API.\n\n' +
                 'Pipeline: generate_still → approve_still → animate → check_job. ' +
+                'For externally generated images, use import_image → approve_still → ' +
+                'animate → check_job. ' +
                 'Use list_shots to resume a project cold.\n\n' +
                 'The visual style is locked server-side and is applied to every prompt ' +
                 'automatically — never describe style, outlines, shading, or realism in a ' +
