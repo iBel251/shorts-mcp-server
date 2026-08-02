@@ -1272,24 +1272,31 @@ export function registerTools(server: McpServer): void {
         {
             title: 'Check a video job',
             description:
-                'Poll an animate job. When done, returns the video URL plus the first and ' +
-                'last frames as viewable images. Look at both: the characteristic failure ' +
-                'is starting flat and progressively turning photorealistic, or moving ' +
-                'something meant to stay still. Report drift rather than accepting it.',
-            // Plays the clip and shows the frame pair inline for the user.
+                'Poll an animate job. When done, returns the video URL and a stored ' +
+                'last_frame_url for later continuity. The player widget displays the video. ' +
+                'Only request frame images or critique for explicit diagnostics.',
+            // Plays the clip inline for the user.
             _meta: uiMeta(PLAYER_URI),
             inputSchema: {
                 job_id: z.string().min(1).describe('Job id returned by animate.'),
                 include_images: z
                     .boolean()
                     .optional()
-                    .describe('Embed the frames as images. Default true; set false to save tokens.'),
+                    .describe(
+                        'Embed a last-frame preview image. Default false; use true only for diagnostics.',
+                    ),
+                include_frames: z
+                    .boolean()
+                    .optional()
+                    .describe(
+                        'Return first_frame_url as well as last_frame_url. Default false; use true only for diagnostics.',
+                    ),
                 critique: z
                     .boolean()
                     .optional()
                     .describe(
                         'Run a server-side vision comparison of the two frames and return it ' +
-                        'as text. Default true. Useful when embedded images do not reach you.',
+                        'as text. Default false; use true only when troubleshooting a bad video.',
                     ),
             },
         },
@@ -1317,15 +1324,15 @@ export function registerTools(server: McpServer): void {
                 const firstUrl = byId.get(job.first_frame_asset_id ?? '')?.public_url;
                 const lastUrl = byId.get(job.last_frame_asset_id ?? '')?.public_url;
                 payload.video_url = byId.get(job.video_asset_id ?? '')?.public_url;
-                payload.first_frame_url = firstUrl;
                 payload.last_frame_url = lastUrl;
+                if (args.include_frames === true || args.critique === true) {
+                    payload.first_frame_url = firstUrl;
+                }
                 payload.hint =
-                    'The two frames below are the first and last frame of this clip. Compare ' +
-                    'them for style drift (flat 2D holding? outlines even? anything moved that ' +
-                    'should not have?) before accepting this shot.';
+                    'Video is ready. Review the clip in the player widget. The last_frame_url ' +
+                    'is stored for later continuity if needed.';
 
-                // The drift check as text, for when the frames do not arrive.
-                if (getConfig().enableVisionCritique && args.critique !== false) {
+                if (getConfig().enableVisionCritique && args.critique === true) {
                     const shot = await getShot(job.shot_id);
                     if (firstUrl && lastUrl && shot) {
                         payload.drift_report = await critiqueDrift(
@@ -1334,29 +1341,13 @@ export function registerTools(server: McpServer): void {
                             shot.description,
                         );
                         payload.hint +=
-                            ' If the frames did not reach you, `drift_report` is a server-side ' +
-                            'vision comparison of the same two frames — a description rather ' +
-                            'than the pictures, so say so if you rely on it.';
+                            ' drift_report is diagnostic text from a server-side vision ' +
+                            'comparison; do not use it as a normal approval gate.';
                     }
                 }
 
-                if (args.include_images !== false) {
-                    // One block, not two. The frames are only ever looked at
-                    // together, side by side is the better comparison anyway,
-                    // and halving image slots per call doubles how long a
-                    // conversation stays useful if the host caps them.
-                    images.push(
-                        ...(firstUrl && lastUrl
-                            ? await contactSheetBlocks(
-                                  [firstUrl, lastUrl],
-                                  'LEFT = first frame, RIGHT = last frame. Compare them for ' +
-                                      'style drift before accepting this shot.',
-                              )
-                            : [
-                                  ...(await imageBlocks(firstUrl, 'FIRST frame:')),
-                                  ...(await imageBlocks(lastUrl, 'LAST frame:')),
-                              ]),
-                    );
+                if (args.include_images === true && lastUrl) {
+                    images.push(...(await imageBlocks(lastUrl, 'Last frame preview:')));
                 }
             }
             if (job.error) payload.error = job.error;

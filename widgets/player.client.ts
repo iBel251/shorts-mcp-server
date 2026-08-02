@@ -2,14 +2,11 @@
  * Player widget for animate and check_job.
  *
  * Attached to `animate` as well as `check_job`, so a card appears the moment a
- * job is submitted rather than only once someone remembers to poll. While the
- * job runs the widget polls `check_job` itself and updates in place; when it
- * finishes the clip plays inline and the first and last frame sit side by side,
- * since that comparison is the whole quality-control mechanism.
+ * job is submitted. While the job runs, the widget polls `check_job` and
+ * updates in place; when it finishes, the clip plays inline.
  *
- * Its own polling passes include_images:false and critique:false — the widget
- * needs URLs, and re-running the vision pass on every tick would cost real
- * money for something no one reads.
+ * Widget polling keeps include_images:false and critique:false so the normal
+ * path is video-first and does not trigger frame previews or paid vision checks.
  */
 import { App } from '@modelcontextprotocol/ext-apps';
 
@@ -17,7 +14,6 @@ interface JobPayload {
     job_id?: string;
     status?: string;
     video_url?: string;
-    first_frame_url?: string;
     last_frame_url?: string;
     error?: string;
     duration?: number;
@@ -35,8 +31,6 @@ let jobId: string | undefined;
 let startedAt = Date.now();
 let polling = false;
 let timer: number | undefined;
-/** Tiled first/last frame from the tool result, inlined as a data: URI. */
-let framesDataUri: string | undefined;
 
 function escapeHtml(value: string): string {
     return value.replace(
@@ -44,19 +38,6 @@ function escapeHtml(value: string): string {
         (c) =>
             ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c,
     );
-}
-
-/**
- * Inline the tool result's image block as a data: URI.
- *
- * The sandbox cannot block what it does not have to fetch, and a declared
- * resourceDomains allowlist is not guaranteed to be honoured by the host.
- */
-function captureFrames(result: {
-    content?: Array<{ type: string; data?: string; mimeType?: string }>;
-}): void {
-    const image = result.content?.find((c) => c.type === 'image' && c.data);
-    if (image) framesDataUri = `data:${image.mimeType ?? 'image/jpeg'};base64,${image.data}`;
 }
 
 function elapsed(): string {
@@ -86,7 +67,7 @@ function render(job: JobPayload): void {
                         job.error ??
                             (failed
                                 ? 'The job did not complete.'
-                                : 'Generating — usually 30s to a few minutes.'),
+                                : 'Generating, usually 30s to a few minutes.'),
                     )}</p>
                 </div>
             </div>`;
@@ -101,29 +82,6 @@ function render(job: JobPayload): void {
                           preload="metadata" loop></video>`
                 : ''
         }
-        ${
-            // The tiled frame pair from the tool result: a data: URI, so the
-            // sandbox has no network request to block. Falls back to fetching
-            // the stored PNGs only if the result carried no image block.
-            framesDataUri
-                ? `<img class="sheet" src="${framesDataUri}" alt="First and last frame" />
-                   <p class="note">Left is the first frame, right is the last. Compare them
-                   for style drift before accepting this shot.</p>`
-                : job.first_frame_url && job.last_frame_url
-                  ? `<div class="frames">
-                       <figure>
-                           <img src="${escapeHtml(job.first_frame_url)}" alt="First frame" />
-                           <figcaption>First frame</figcaption>
-                       </figure>
-                       <figure>
-                           <img src="${escapeHtml(job.last_frame_url)}" alt="Last frame" />
-                           <figcaption>Last frame</figcaption>
-                       </figure>
-                     </div>
-                     <p class="note">Compare the two frames for style drift before accepting
-                     this shot.</p>`
-                  : ''
-        }
     `;
 
     // Video cannot practically be inlined, so it is the one thing still fetched
@@ -135,7 +93,7 @@ function render(job: JobPayload): void {
             holder.className = 'blocked';
             holder.innerHTML = '<span>video blocked by sandbox</span>';
             const link = document.createElement('a');
-            link.textContent = 'open clip ↗';
+            link.textContent = 'open clip';
             link.href = job.video_url!;
             link.target = '_blank';
             link.rel = 'noreferrer';
@@ -154,22 +112,15 @@ function render(job: JobPayload): void {
 /** Poll check_job until the job settles. */
 async function poll(): Promise<void> {
     if (!jobId || polling) return;
-    // Without host support for proxying tool calls the card simply stays on
-    // its last known status rather than erroring.
     if (!app.getHostCapabilities()?.serverTools) return;
     polling = true;
     try {
-        // include_images stays on: check_job only attaches them once the job is
-        // done, so nothing is transferred on the in-progress ticks, and the
-        // final tick gives us the frames to inline. critique stays off — the
-        // vision pass costs real money and nothing here reads it.
         const result: any = await app.callServerTool({
             name: 'check_job',
-            arguments: { job_id: jobId, include_images: true, critique: false },
+            arguments: { job_id: jobId, include_images: false, critique: false },
         });
         const text = result.content?.find((c: { type: string }) => c.type === 'text');
         const job: JobPayload = result.structuredContent ?? (text ? JSON.parse(text.text) : {});
-        captureFrames(result);
         render(job);
 
         const settled = ['done', 'failed', 'expired'].includes(job.status ?? '');
@@ -177,7 +128,6 @@ async function poll(): Promise<void> {
             timer = window.setTimeout(() => void poll(), POLL_MS);
         }
     } catch {
-        // Transient failures are not worth surfacing mid-poll; try again.
         if (Date.now() - startedAt < MAX_POLL_MS) {
             timer = window.setTimeout(() => void poll(), POLL_MS * 2);
         }
@@ -199,14 +149,11 @@ app.ontoolresult = (result) => {
         }
     }
 
-    captureFrames(result);
-
     jobId = job.job_id;
     startedAt = Date.now();
     if (timer) window.clearTimeout(timer);
     render(job);
 
-    // animate returns "submitted" immediately; keep the card live from there.
     if (jobId && !['done', 'failed', 'expired'].includes(job.status ?? '')) {
         timer = window.setTimeout(() => void poll(), POLL_MS);
     }

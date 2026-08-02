@@ -16,7 +16,8 @@ import { GALLERY_HTML, PLAYER_HTML } from './widgets.generated.js';
  * pipeline can actually see the four variations and watch the clip.
  *
  * The two mechanisms are complementary and both are kept: the widget is for the
- * user, the image blocks are for the model. Neither replaces the other.
+ * user, the image blocks are for the model when explicitly requested. Neither
+ * replaces the other.
  *
  * This is an optional, backwards-compatible extension. Hosts that do not
  * support it ignore the `_meta` and the resource, and still get the text and
@@ -97,7 +98,7 @@ export function registerApps(server: McpServer): void {
         'shorts-player',
         PLAYER_URI,
         'Clip player',
-        'Live job card, then the clip with its first and last frame side by side.',
+        'Live job card, then the finished clip.',
         PLAYER_HTML,
     );
 }

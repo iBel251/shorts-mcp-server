@@ -201,7 +201,8 @@ try {
         // Token control for the embedded images.
         assert.ok(propsOf('generate_still').includes('include_images'));
         assert.ok(propsOf('check_job').includes('include_images'));
-        pass('generate_still and check_job expose include_images');
+        assert.ok(propsOf('check_job').includes('include_frames'));
+        pass('generate_still exposes include_images; check_job exposes video diagnostics');
 
         assert.ok(propsOf('generate_still').includes('reference_asset_ids'));
         pass('generate_still accepts reference images by asset id');
@@ -262,19 +263,26 @@ try {
         }
         pass('UI resources are self-contained documents with no external refs');
 
-        // Widgets must be able to render from the tool result's own base64
-        // rather than fetching storage: a declared resourceDomains allowlist is
-        // not guaranteed to be honoured, and a blocked fetch shows as a black
-        // rectangle inside a perfectly rendered widget.
-        for (const uri of uris) {
-            const read = await client.readResource({ uri });
-            const html = (read.contents[0] as { text?: string }).text ?? '';
+        // The gallery still paints embedded image bytes. The player is
+        // intentionally video-first and does not display first/last-frame image
+        // blocks in the normal path.
+        {
+            const gallery = await client.readResource({ uri: 'ui://shorts/gallery.html' });
+            const galleryHtml = (gallery.contents[0] as { text?: string }).text ?? '';
             assert.ok(
-                html.includes('base64,'),
-                `${uri} must inline images from the result as data: URIs`,
+                galleryHtml.includes('base64,') || galleryHtml.includes('base64ToBlob'),
+                'gallery must be able to paint embedded image bytes',
+            );
+
+            const player = await client.readResource({ uri: 'ui://shorts/player.html' });
+            const playerHtml = (player.contents[0] as { text?: string }).text ?? '';
+            assert.ok(
+                playerHtml.includes('include_images:!1') ||
+                    playerHtml.includes('include_images:false'),
+                'player polling must not request frame image blocks by default',
             );
         }
-        pass('widgets inline result images as data: URIs (nothing for CSP to block)');
+        pass('gallery paints images; player stays video-first');
 
         // Every referenced resource must actually exist: a tool pointing at a
         // missing ui:// is a broken card with no error anyone would see.

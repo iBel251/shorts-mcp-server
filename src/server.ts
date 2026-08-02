@@ -37,10 +37,11 @@ function buildMcpServer(): McpServer {
                 'automatically — never describe style, outlines, shading, or realism in a ' +
                 'shot_description or motion_instruction. Use palette_override only for ' +
                 'per-beat colour shifts.\n\n' +
-                'When check_job returns done, always compare first_frame_url against ' +
-                'last_frame_url before accepting the shot. These models drift: they start ' +
-                'in the correct flat style and progressively turn photorealistic, or animate ' +
-                'something that was meant to stay still.',
+                'For multi-scene shorts, submit every approved scene image to animate first ' +
+                'so each clip gets its own player card, then poll check_job for completion. ' +
+                'Do not run a first-frame/last-frame approval pass unless the user asks for ' +
+                'diagnostics; let the user review the finished video widgets and name any ' +
+                'bad scenes to regenerate.',
         },
     );
     registerTools(server);

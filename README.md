@@ -140,7 +140,7 @@ add new ones.
 | `get_story_manifest` | Returns the saved story plan plus reusable reference image URLs and asset ids. |
 | `approve_still` | Marks one still approved, un-approves siblings. |
 | `animate` | Submits image-to-video, returns a job id **immediately**. |
-| `check_job` | Polls a job. On done: video URL + first/last frames as **viewable images**. |
+| `check_job` | Polls a job. On done: video URL + stored `last_frame_url`; optional diagnostics can return frames. |
 | `list_shots` | Full project state, all still variations, and every project. Cold-resume path. |
 
 Projects are addressed by `project_name` on `generate_still` (created on first
@@ -217,8 +217,12 @@ Passing an array to `image` is rejected with 422.
 Typical flow:
 
 ```
-generate_still → approve_still → animate → check_job (poll) → compare frames
+generate_still -> approve_still -> animate -> check_job (poll)
 ```
+
+Current ChatGPT story flow does not run a first/last-frame approval pass. Submit
+all scene videos first, let the player widgets show them, then have the user
+name any bad scene videos to regenerate.
 
 ---
 
@@ -249,23 +253,15 @@ written to Supabase Storage before the tool returns, and only our own URLs are
 handed back. The previous pipeline (Higgsfield) failed mid-project when upstream
 media IDs expired and the style reference plates became unreachable.
 
-### First and last frames are extracted automatically — and embedded
+### Last frames are stored automatically
 
-Claude cannot watch video, but it can compare two stills. The characteristic
-failure of these models is drift — starting in the correct flat style and
-progressively realism-ifying, or animating something meant to stay still.
-`animate` results therefore always come with frame 1 and the final frame.
+Finished videos still have extracted frame assets in Storage. The normal
+`check_job` result returns the `video_url` and `last_frame_url`; the last frame
+is useful later as a continuity reference or a handoff point.
 
-They are returned as MCP **image content blocks**, not just URLs. Returning URLs
-alone made the feature inert: Claude cannot open arbitrary links, so the frames
-arrived as text it could not look at and the drift check still needed a human to
-screenshot them. `generate_still` embeds its variations for the same reason —
-the model is asked to pick one, so it has to be able to see them.
-
-Embedded images are downscaled to 640px-wide JPEGs (`PREVIEW_MAX_WIDTH`), about
-a tenth the size of the stored PNG at no cost to a style judgement. The
-full-resolution PNG stays in Storage and its URL is returned alongside. Pass
-`include_images: false` to either tool to suppress the blocks and save tokens.
+`check_job` no longer embeds a first/last-frame comparison by default. Pass
+`include_images: true`, `include_frames: true`, or `critique: true` only when
+explicitly troubleshooting a bad clip.
 
 **`generate_still` returns one contact sheet, not one image per variation.**
 Four variations tile into a single image (597kB of PNGs → a 69kB JPEG in
@@ -284,7 +280,7 @@ the host renders in a sandboxed iframe inline in the conversation:
 | Widget | Tools | Shows |
 |---|---|---|
 | Gallery | `generate_still` | The variations, full size. Click one to approve it. |
-| Player | `animate`, `check_job` | A live job card, then the clip plus first/last frame. |
+| Player | `animate`, `check_job` | A live job card, then the finished clip. |
 
 The player is attached to **`animate` as well as `check_job`**, so a card appears
 the moment a job is submitted rather than only once someone remembers to poll.
@@ -338,8 +334,9 @@ structured judgement as text:
 }]
 ```
 
-`check_job` returns a `drift_report` comparing first and last frame in one call —
-the drift check as text.
+`check_job` can return a `drift_report` comparing first and last frame only when
+called with `critique: true`; this is a diagnostic path, not the regular video
+approval flow.
 
 The rubric is built from `STYLE_BLOCK` and `NEGATIVE_BLOCK`, so it tests the same
 rules the prompt asserts. Verdicts are re-derived server-side rather than

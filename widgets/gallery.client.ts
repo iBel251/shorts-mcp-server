@@ -15,6 +15,7 @@
  * leaves something usable.
  */
 import { App } from '@modelcontextprotocol/ext-apps';
+import { paintImage } from './paint.js';
 
 interface Still {
     asset_id: string;
@@ -32,6 +33,8 @@ const root = document.getElementById('root')!;
 
 let approving = false;
 let approvedId: string | undefined;
+/** Raw base64 of the contact sheet, painted by whichever route survives CSP. */
+let sheetImage: { data: string; mimeType: string } | undefined;
 
 function escapeHtml(value: string): string {
     return value.replace(
@@ -89,9 +92,11 @@ function render(stills: Still[], sheet?: string, note?: string): void {
     }
 
     // Preferred layout: the contact sheet the tool already produced, shown
-    // whole, with an approve button per variation beneath it.
+    // whole, with an approve button per variation beneath it. The image itself
+    // is painted after render() by paintImage, which escalates through data:,
+    // blob: and canvas until one is not blocked.
     const sheetHtml = sheet
-        ? `<img class="sheet" src="${sheet}" alt="All variations" />`
+        ? `<div class="sheet-slot"><p class="empty">rendering…</p></div>`
         : `<div class="grid">${stills
               .map(
                   (s, i) => `
@@ -126,7 +131,25 @@ function render(stills: Still[], sheet?: string, note?: string): void {
         ${note ? `<p class="note">${escapeHtml(note)}</p>` : ''}
     `;
 
-    // Only URL-sourced images can be blocked; data: URIs cannot.
+    const slot = root.querySelector<HTMLElement>('.sheet-slot');
+    if (slot && sheetImage) {
+        void paintImage(slot, sheetImage.data, sheetImage.mimeType, 'All variations').then(
+            (how) => {
+                if (how === 'failed') {
+                    slot.innerHTML = `<p class="note">Image could not be displayed in this
+                        sandbox. Use the links below.</p>`;
+                } else if (how !== 'data') {
+                    // Surface the fallback so a CSP quirk is visible rather than
+                    // silently degrading next time.
+                    slot.insertAdjacentHTML(
+                        'beforeend',
+                        `<p class="note">rendered via ${how}</p>`,
+                    );
+                }
+            },
+        );
+    }
+
     if (!sheet) {
         for (const [i, img] of Array.from(
             root.querySelectorAll<HTMLImageElement>('.card img'),
@@ -164,10 +187,12 @@ app.ontoolresult = (result) => {
     const image = (result.content as ImageBlock[] | undefined)?.find(
         (c) => c.type === 'image' && c.data,
     );
-    const sheet = image ? `data:${image.mimeType ?? 'image/jpeg'};base64,${image.data}` : undefined;
+    sheetImage = image?.data
+        ? { data: image.data, mimeType: image.mimeType ?? 'image/jpeg' }
+        : undefined;
 
     approvedId = undefined;
-    render(stills, sheet);
+    render(stills, sheetImage ? 'inline' : undefined);
 };
 
 render([]);

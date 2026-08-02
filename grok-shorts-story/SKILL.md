@@ -236,18 +236,34 @@ If the user says a scene image is faulty:
 
 ### 11. Generate Scene Videos
 
-When scene images are approved, generate video in sequence, one 5-second scene at a time.
+When scene images are approved, generate all 5-second scene videos before asking for video fixes.
 
-For each approved shot:
+First, submit every approved shot:
 
 - Use that shot's `approved_scene_asset_id` as the `asset_id`.
 - Call `animate` with the matching `motion_instruction` and `duration: 5`.
-- Show the returned video/job card in chat.
-- Call `check_job` until the job is done or failed.
-- When done, inspect the first and last frame if available.
-- If the video drifts badly, fails the shot, or becomes photorealistic, tell the user plainly and ask whether to remake that scene image or retry the video.
-- If acceptable, record the `job_id`, `video_url`, `first_frame_url`, and `last_frame_url` in the manifest under that shot.
-- Call `save_story_manifest` after each completed video so progress survives a new chat.
+- Let each `animate` result create its own video/player widget in chat.
+- Record the returned `job_id` in the manifest under that shot.
+
+Do not wait for one scene video to finish before submitting the next scene video unless the host/tooling forces sequential calls.
+
+After all video jobs are submitted:
+
+- Poll each `job_id` with `check_job` until every job is `done`, `failed`, or `expired`.
+- Do not inspect or compare first and last frames as a normal approval step.
+- Do not approve or disapprove each video yourself.
+- When a job is done, record `video_url` and `last_frame_url` in the manifest under that shot.
+- Keep saving the manifest with `save_story_manifest` as jobs finish so progress survives a new chat.
+- When all possible videos are done, show the user the completed scene video names/shot numbers and ask them to name any bad videos to regenerate.
+
+If the user names a bad scene video:
+
+- Find the shot by scene name, label, or shot number from the manifest.
+- Usually retry `animate` using the same approved scene image asset and a clearer `motion_instruction`.
+- If the underlying image is the problem, remake the scene image using the replacement flow in Step 10, approve the replacement still, then call `animate` again.
+- Save regenerated videos as versions in the manifest and mark the latest one as current.
+
+Only request `check_job` diagnostics such as frame images, `include_frames`, or `critique` if the user explicitly asks for troubleshooting.
 
 ## Stop Point For This Simple Version
 
